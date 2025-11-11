@@ -325,21 +325,30 @@ main() {
     echo -e "${BOLD}Performance Analysis:${NC}"
 
     # Extract the first numerical throughput value for analysis
-    first_throughput=$(echo "${test_results[0]}" | grep -oP '\d+\.\d+' || echo "0")
+    first_throughput=$(echo "${test_results[0]}" | grep -oP '\d+\.\d+' | head -1)
 
-    if (( $(echo "$first_throughput < 10" | bc -l) )); then
+    if [ -z "$first_throughput" ]; then
+        first_throughput="0"
+    fi
+
+    if (( $(echo "$first_throughput < 10" | bc -l 2>/dev/null || echo 1) )); then
         echo -e "${RED}⚠️  WARNING: Very low throughput detected (<10 t/s)${NC}"
-        echo -e "   Possible issues:"
-        echo -e "   - InfiniBand/RoCE not being used (check with: ./check_infiniband.sh)"
-        echo -e "   - Network bottleneck (verify NCCL is using NET/IB)"
-        echo -e "   - Run diagnostics: ./vllm_system_checkout.sh"
-    elif (( $(echo "$first_throughput < 30" | bc -l) )); then
+        echo -e "   ${RED}CRITICAL: InfiniBand/RoCE is NOT being used!${NC}"
+        echo -e ""
+        echo -e "   ${YELLOW}Immediate actions:${NC}"
+        echo -e "   1. Check NCCL logs: docker exec ray-head tail -200 /var/log/vllm.log | grep -E 'NCCL|NET'"
+        echo -e "   2. Run InfiniBand diagnostics: ./check_infiniband.sh"
+        echo -e "   3. Run full diagnostics: ./vllm_system_checkout.sh"
+        echo -e ""
+        echo -e "   ${YELLOW}Expected: NCCL INFO NET/IB (InfiniBand)${NC}"
+        echo -e "   ${RED}Likely seeing: NCCL INFO NET/Socket (Ethernet fallback)${NC}"
+    elif (( $(echo "$first_throughput < 30" | bc -l 2>/dev/null || echo 1) )); then
         echo -e "${YELLOW}⚠️  Low throughput detected (<30 t/s)${NC}"
         echo -e "   Consider:"
         echo -e "   - Increasing GPU memory utilization"
         echo -e "   - Verifying all GPUs are being used"
         echo -e "   - Checking network configuration"
-    elif (( $(echo "$first_throughput >= 50" | bc -l) )); then
+    elif (( $(echo "$first_throughput >= 50" | bc -l 2>/dev/null || echo 0) )); then
         echo -e "${GREEN}✓ Excellent throughput! InfiniBand/RoCE is working well.${NC}"
     else
         echo -e "${GREEN}✓ Good throughput for this configuration.${NC}"
