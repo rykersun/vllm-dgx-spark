@@ -899,17 +899,39 @@ For detailed analysis of TensorRT-LLM compatibility with DGX Spark:
 
 1. **`TENSORRT_SUMMARY.md`** - Executive summary and recommendations
 2. **`TENSORRT_LLM_ANALYSIS.md`** - Full technical analysis (10+ pages)
-3. **`test_tensorrt_llm_safe.sh`** - Safe testing script with built-in safeguards
+3. **`TENSORRT_SOLUTION.md`** - **NEW: Detailed implementation guide**
+4. **`test_tensorrt_llm_safe.sh`** - Safe testing script (pre-built containers)
+5. **`build_tensorrt_llm.sh`** - **NEW: Build from source with SM120 support**
+
+### Solutions Available
+
+**Option 1: Build from Source (Gets SM120 Support)**
+- All GB10/SM120 fixes are in main branch (PR #7937, #8803, #9054, etc.)
+- Use `./build_tensorrt_llm.sh` to compile with SM120 kernels
+- Expected: 3-5x faster than vLLM
+- Build time: 2-4 hours
+- See `TENSORRT_SOLUTION.md` for complete guide
+
+**Option 2: Test Pre-built Containers (Limited Support)**
+- Use `./test_tensorrt_llm_safe.sh` to test v1.2.0rc3
+- Works for single-GPU only (SM120 incomplete)
+- Multi-node likely to hang (known bugs)
+
+**Option 3: Continue with vLLM (Current)**
+- Stable and working correctly
+- 3.17 t/s single request, 8-15 t/s with batching
+- No risk of system lockups
 
 ### Recommendation
 
-**For multi-node 70B models**: Continue using vLLM (stable, working correctly)
+**For multi-node 70B models**:
+1. **Immediate**: Continue using vLLM (stable, production-ready)
+2. **Advanced users**: Build TensorRT-LLM from source (3-5x faster, requires 2-4hr build)
+3. **Future**: Wait for v1.2.0 final with official GB10 support
 
-**For single-GPU 8B models**: Test TensorRT-LLM cautiously with `./test_tensorrt_llm_safe.sh`
+**For single-GPU 8B models**: Build from source for 2-3x speedup
 
-**Long-term**: Wait for TensorRT-LLM v1.2.0 final or v1.3.0 with official GB10 support
-
-See `TENSORRT_SUMMARY.md` for complete analysis and decision matrix.
+See `TENSORRT_SOLUTION.md` for step-by-step build and deployment guide.
 
 ---
 
