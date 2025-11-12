@@ -880,6 +880,20 @@ docker rm ray-head
 - **Python**: 3.x (from container)
 - **CUDA**: Included in NVIDIA container
 
+## Alternative: TensorRT-LLM
+
+For users interested in TensorRT-LLM as a potentially faster alternative to vLLM, we maintain a separate repository with comprehensive documentation and build scripts:
+
+**Repository**: `~/trt-dgx-spark/` (separate from this vLLM repository)
+
+**Key Info**:
+- TensorRT-LLM can be 3-5x faster than vLLM for Llama-70B
+- Requires building from source for DGX Spark GB10/SM120 GPU support
+- Build time: 2-4 hours
+- See `~/trt-dgx-spark/README.md` for complete documentation
+
+---
+
 ## Contributing
 
 Feel free to submit issues or pull requests for improvements.
