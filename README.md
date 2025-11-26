@@ -262,96 +262,93 @@ Real-time GPU utilization monitoring during inference to identify performance bo
 - Bottleneck identification (compute-bound vs network-bound)
 - Detailed log file saved
 
-#### 5. `benchmark_current_vllm.sh` - Comprehensive Performance Benchmarking
+#### 5. `benchmark_current_vllm.sh` - Performance Benchmarking with vllm bench serve
 
-A comprehensive benchmark suite for any model currently loaded in vLLM. Auto-detects the model and runs latency, throughput, concurrent, streaming, and multi-domain performance tests.
-
-**Tests performed:**
-- **Latency Test**: Measures response latency with minimal token generation
-- **Single Request Throughput**: Tokens/second for individual requests (256 tokens)
-- **Concurrent Request Performance**: Parallel request handling with aggregate throughput
-- **Long Generation Performance**: Sustained generation with 512 tokens
-- **Streaming Performance**: Time to first token measurement
-- **Multi-Domain Performance**: Tests across code, math, creative, technical, and general content
+Uses the official `vllm bench serve` tool for consistent, reproducible benchmarks. Based on eugr's benchmarking methodology from the NVIDIA forums.
 
 **Features:**
-- Automatic vLLM URL and model detection
-- Support for reasoning models (e.g., DeepSeek R1) with `reasoning_content` field
-- Configurable number of requests and concurrency level
-- Quick mode for faster results (`-q` flag)
-- JSON output export for integration with monitoring tools
-- Color-coded output with detailed metrics
-- Performance assessment with recommendations
+- Uses official vLLM benchmarking tool for accurate results
+- ShareGPT dataset for realistic workload distribution (auto-downloads if missing)
+- Measures Output token throughput, Peak throughput, TTFT, TPOT
+- Single-request mode for latency testing
+- Comparison against reference InfiniBand vs Ethernet performance
 
 **Usage:**
 ```bash
-# Basic usage (auto-detects local vLLM and model)
+# Full benchmark (100 prompts from ShareGPT dataset)
 ./benchmark_current_vllm.sh
 
-# Specify vLLM URL
-./benchmark_current_vllm.sh -u http://192.168.1.100:8000
+# Single-request latency test
+./benchmark_current_vllm.sh --single
 
-# Quick mode with fewer requests
+# Quick benchmark (20 prompts)
 ./benchmark_current_vllm.sh --quick
 
-# Full benchmark with JSON output
-./benchmark_current_vllm.sh -n 10 -c 8 -o results.json
-
-# Show response content (verbose mode)
-./benchmark_current_vllm.sh -v
+# Custom prompts/concurrency with JSON output
+./benchmark_current_vllm.sh -n 50 -c 50 -o results.json
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
 | `-u, --url URL` | vLLM API URL (default: auto-detect) |
-| `-n, --requests N` | Number of test requests per benchmark (default: 5) |
-| `-c, --concurrency N` | Number of concurrent requests (default: 5) |
+| `-n, --num-prompts N` | Number of prompts to benchmark (default: 100) |
+| `-c, --concurrency N` | Max concurrent requests (default: 100) |
+| `-d, --dataset PATH` | Path to ShareGPT dataset JSON |
+| `-s, --single` | Run single-request benchmark only |
+| `-q, --quick` | Quick mode: 20 prompts, lower concurrency |
 | `-o, --output FILE` | Output results to JSON file |
-| `-q, --quick` | Quick mode: fewer requests, faster results |
-| `-v, --verbose` | Show response content in output |
 | `-h, --help` | Show help message |
+
+**Performance Reference (Qwen3-30B-A3B, dual Spark):**
+| Configuration | Ethernet | InfiniBand | Improvement |
+|---------------|----------|------------|-------------|
+| Tensor Parallel (tp=2) | 56 t/s | **76 t/s** | +36% |
+| Batch (100 prompts) | ~410 t/s | ~707 t/s | +72% |
+
+#### 6. `diagnose_nccl.sh` - NCCL/InfiniBand Diagnostic
+
+Verifies that NCCL is properly configured to use InfiniBand/RoCE instead of falling back to standard Ethernet. Using IB/RoCE can provide 30-40% better performance.
+
+**What it checks:**
+- InfiniBand/RoCE device detection via ibdev2netdev
+- RDMA/Verbs libraries (libibverbs, librdmacm)
+- NCCL environment variables
+- Network interface configuration
+- NCCL transport selection (IB vs Socket)
+- vLLM log analysis for NCCL issues
+
+**Usage:**
+```bash
+# Check host system
+./diagnose_nccl.sh
+
+# Check inside ray-head container (recommended)
+./diagnose_nccl.sh --container
+```
 
 **Example output:**
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-vLLM Model Benchmark
+NCCL/InfiniBand Diagnostic Report
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  API URL:     http://localhost:8000
-  Requests:    5
-  Concurrency: 5
 
-✓ vLLM is accessible
-✓ Model: meta-llama/Llama-3.3-70B-Instruct
+▶ 1. InfiniBand/RoCE Device Detection
+✓ ibdev2netdev command available
+✓ InfiniBand/RoCE devices found:
+    mlx5_0 port 1 ==> enp1s0f0np0 (Up)
+    mlx5_1 port 1 ==> enp1s0f1np1 (Up)
+✓ 2 active IB/RoCE device(s)
 
-▶ Test 2: Single Request Throughput
-  Request 1/5 (256 tokens)... 256 tokens, 78.45 t/s
-  ...
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Benchmark Summary
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Model:     meta-llama/Llama-3.3-70B-Instruct
-  Results:
-    Latency (avg):          0.892s
-    Single throughput:      78.45 t/s
-    Concurrent throughput:  142.30 t/s
-    Long gen throughput:    75.20 t/s
-    Multi-domain avg:       76.88 t/s
-
-  Performance Assessment:
-    ✓ Excellent throughput (78.45 t/s)
+▶ 2. RDMA/Verbs Libraries
+✓ libibverbs found
+✓ librdmacm found
+...
 ```
-
-**Performance expectations:**
-- **With InfiniBand/RoCE**: 50-100 tokens/s for Llama-3.3-70B (single request)
-- **With InfiniBand/RoCE**: 100-200 tokens/s aggregate (concurrent requests)
-- **With Ethernet fallback**: <10 tokens/s (indicates configuration problem)
-- Script provides performance assessment with warnings for low throughput
 
 ### Diagnostic Scripts
 
-#### 6. `vllm_system_checkout.sh` - Comprehensive System Diagnostics
+#### 7. `vllm_system_checkout.sh` - Comprehensive System Diagnostics
 
 A complete diagnostic tool that collects all critical system information for troubleshooting performance and configuration issues.
 

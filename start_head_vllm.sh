@@ -155,14 +155,14 @@ log ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 1/9: Pulling Docker image"
+log "Step 1/10: Pulling Docker image"
 if ! docker pull "${IMAGE}"; then
   error "Failed to pull image ${IMAGE}"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 2/9: Cleaning old container"
+log "Step 2/10: Cleaning old container"
 if docker ps -a --format '{{.Names}}' | grep -qx "${NAME}"; then
   log "  Removing existing container: ${NAME}"
   docker rm -f "${NAME}" >/dev/null
@@ -170,7 +170,7 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 3/9: Starting head container"
+log "Step 3/10: Starting head container"
 
 # Build environment variable args for IB/NCCL configuration
 # These are passed into the container to ensure NCCL uses the IB/RoCE link
@@ -225,7 +225,32 @@ log "  Container started successfully"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 4/9: Installing Ray ${RAY_VERSION}"
+log "Step 4/10: Installing RDMA/InfiniBand libraries for NCCL"
+log "  These libraries are required for NCCL to use InfiniBand/RoCE instead of Ethernet"
+if ! docker exec "${NAME}" bash -lc "
+  apt-get update -qq >/dev/null 2>&1
+  apt-get install -y -qq \
+    infiniband-diags \
+    libibverbs1 \
+    librdmacm1 \
+    rdma-core \
+    ibverbs-providers \
+    >/dev/null 2>&1
+"; then
+  log "  ⚠️  Warning: Could not install RDMA libraries (may already be present)"
+fi
+
+# Verify RDMA libraries are available
+if docker exec "${NAME}" bash -lc "ldconfig -p 2>/dev/null | grep -q libibverbs"; then
+  log "  ✅ RDMA libraries installed (libibverbs, librdmacm)"
+else
+  log "  ⚠️  Warning: RDMA libraries may not be properly installed"
+  log "     NCCL may fall back to Socket transport (slower)"
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+log "Step 5/10: Installing Ray ${RAY_VERSION}"
 if ! docker exec "${NAME}" bash -lc "pip install -q -U 'ray==${RAY_VERSION}'"; then
   error "Failed to install Ray"
 fi
@@ -240,7 +265,7 @@ log "  Ray ${INSTALLED_RAY_VERSION} installed"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 5/9: Pre-downloading model weights"
+log "Step 6/10: Pre-downloading model weights"
 log "  Model: ${MODEL}"
 log "  This may take a while for large models on first download..."
 
@@ -279,7 +304,7 @@ log "  Model download complete and verified"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 6/9: Starting Ray head"
+log "Step 7/10: Starting Ray head"
 docker exec "${NAME}" bash -lc "
   ray stop --force 2>/dev/null || true
   ray start --head \
@@ -305,7 +330,7 @@ done
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 7/9: Waiting for worker nodes"
+log "Step 8/10: Waiting for worker nodes"
 log ""
 log "  ⚠️  IMPORTANT: Before proceeding, ensure all worker nodes have:"
 log "     1. Downloaded the model: export MODEL=${MODEL} && bash start_worker_vllm.sh"
@@ -343,7 +368,7 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 8/9: Starting vLLM server"
+log "Step 9/10: Starting vLLM server"
 log ""
 
 # Kill any existing vLLM processes
@@ -477,7 +502,7 @@ log ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 9/9: Running health checks"
+log "Step 10/10: Running health checks"
 
 # Check Ray status
 RAY_NODES=$(docker exec "${NAME}" bash -lc "ray status --address=127.0.0.1:6380 2>/dev/null | grep 'Healthy:' -A1 | tail -1 | awk '{print \$1}'" || echo "0")
