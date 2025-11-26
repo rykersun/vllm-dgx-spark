@@ -13,76 +13,129 @@ HF_TOKEN="${HF_TOKEN:-}"  # Set via: export HF_TOKEN=hf_xxx
 RAY_VERSION="${RAY_VERSION:-2.51.0}"
 
 # Model configuration
-MODEL="${MODEL:-meta-llama/Llama-3.3-70B-Instruct}"
+MODEL="${MODEL:-mistralai/Mixtral-8x7B-Instruct-v0.1}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"  # Default to 2 for distributed inference
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"   # Increased for better performance
-GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"  # Increased for better throughput
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"   # Context length for Qwen2.5
+GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"  # Can be aggressive with smaller model
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Auto-detect Network Configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DGX Spark uses RoCE (RDMA over Converged Ethernet) with ConnectX-7 NICs.
+# Interface names are enp1s0f1np1 or enP2p1s0f1np1, NOT ib0/ib1.
+# We prefer enp1* interfaces over enP2p* per NVIDIA's NCCL playbook.
+# HEAD_IP must be the 169.254.x.x link-local address on the RoCE interface.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Auto-detect HEAD_IP from InfiniBand interface (or use override)
-if [ -z "${HEAD_IP:-}" ]; then
+# Discover primary RoCE interface using ibdev2netdev
+discover_roce_interface() {
   if command -v ibdev2netdev >/dev/null 2>&1; then
-    # Get the first active IB interface, prioritizing enp1<...> over enP2p<...>
-    PRIMARY_IB_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | grep "^enp1" | head -1)
-    if [ -z "${PRIMARY_IB_IF}" ]; then
-      # Fallback to any active IB interface
-      PRIMARY_IB_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | head -1)
+    # Get active (Up) RoCE interfaces, preferring enp1* over enP2p*
+    local active_line
+    active_line=$(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print;}' | grep 'enp1' | head -n1)
+    if [ -z "$active_line" ]; then
+      active_line=$(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print;}' | head -n1)
     fi
-    if [ -n "${PRIMARY_IB_IF}" ]; then
-      HEAD_IP=$(ip -o addr show "${PRIMARY_IB_IF}" 2>/dev/null | awk '{print $4}' | cut -d'/' -f1 | head -1)
+
+    if [ -n "$active_line" ]; then
+      # Extract interface name (5th field, removing parentheses)
+      echo "$active_line" | awk '{print $5}' | tr -d '()'
     fi
   fi
+}
+
+# Discover RoCE HCA name from ibdev2netdev
+discover_roce_hca() {
+  if command -v ibdev2netdev >/dev/null 2>&1; then
+    local active_line
+    active_line=$(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print;}' | grep 'enp1' | head -n1)
+    if [ -z "$active_line" ]; then
+      active_line=$(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print;}' | head -n1)
+    fi
+
+    if [ -n "$active_line" ]; then
+      echo "$active_line" | awk '{print $1}'
+    fi
+  fi
+}
+
+# Get all active RoCE HCAs (comma-separated for NCCL_IB_HCA)
+discover_all_roce_hcas() {
+  if command -v ibdev2netdev >/dev/null 2>&1; then
+    ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $1}' | sort | tr '\n' ',' | sed 's/,$//'
+  fi
+}
+
+# Get the 169.254.x.x link-local IP from a RoCE interface
+get_roce_ip() {
+  local iface="$1"
+  if [ -n "$iface" ]; then
+    # Prefer 169.254.x.x (link-local) addresses for RoCE
+    local ip
+    ip=$(ip -o addr show "$iface" 2>/dev/null | grep "inet " | awk '{print $4}' | cut -d'/' -f1 | grep "^169\.254\." | head -1)
+    if [ -z "$ip" ]; then
+      # Fall back to any IPv4 address on the interface
+      ip=$(ip -o addr show "$iface" 2>/dev/null | grep "inet " | awk '{print $4}' | cut -d'/' -f1 | head -1)
+    fi
+    echo "$ip"
+  fi
+}
+
+# Auto-detect primary RoCE interface
+PRIMARY_ROCE_IF=$(discover_roce_interface)
+
+# Auto-detect HEAD_IP from RoCE interface (or use override)
+if [ -z "${HEAD_IP:-}" ]; then
+  if [ -n "${PRIMARY_ROCE_IF}" ]; then
+    HEAD_IP=$(get_roce_ip "${PRIMARY_ROCE_IF}")
+  fi
   # Final fallback if auto-detection fails
-  if [ -z "${HEAD_IP}" ]; then
-    echo "ERROR: Could not auto-detect HEAD_IP. Please set HEAD_IP environment variable."
+  if [ -z "${HEAD_IP:-}" ]; then
+    echo "ERROR: Could not auto-detect HEAD_IP from RoCE interface."
+    echo ""
+    echo "Please ensure:"
+    echo "  1. The 200 Gb cable is connected between Spark nodes"
+    echo "  2. Run 'ibdev2netdev' to verify RoCE interfaces are Up"
+    echo "  3. Check that a 169.254.x.x IP is assigned to the RoCE interface"
+    echo ""
+    echo "Then either:"
+    echo "  - Fix the interface and re-run this script, OR"
+    echo "  - Set HEAD_IP manually: export HEAD_IP=169.254.x.x"
     exit 1
   fi
 fi
 
-# Auto-detect network interfaces from active InfiniBand devices
+# Auto-detect network interfaces from active RoCE devices
 if [ -z "${GLOO_IF:-}" ] || [ -z "${TP_IF:-}" ] || [ -z "${NCCL_IF:-}" ] || [ -z "${UCX_DEV:-}" ]; then
-  if command -v ibdev2netdev >/dev/null 2>&1; then
-    # Get active interfaces, prioritizing enp1<...> over enP2p<...>
-    PRIMARY_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | grep "^enp1" | head -1)
-    SECONDARY_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | grep "^enP2p" | head -1)
-
-    # Use primary interface for GLOO, TP, and NCCL
-    GLOO_IF="${GLOO_IF:-${PRIMARY_IF}}"
-    TP_IF="${TP_IF:-${PRIMARY_IF}}"
-    NCCL_IF="${NCCL_IF:-${PRIMARY_IF}}"
-
-    # Use secondary interface for UCX if available, otherwise use primary
-    UCX_DEV="${UCX_DEV:-${SECONDARY_IF:-${PRIMARY_IF}}}"
+  if [ -n "${PRIMARY_ROCE_IF}" ]; then
+    # Use primary RoCE interface for all NCCL/GLOO/TP/UCX communication
+    GLOO_IF="${GLOO_IF:-${PRIMARY_ROCE_IF}}"
+    TP_IF="${TP_IF:-${PRIMARY_ROCE_IF}}"
+    NCCL_IF="${NCCL_IF:-${PRIMARY_ROCE_IF}}"
+    UCX_DEV="${UCX_DEV:-${PRIMARY_ROCE_IF}}"
   else
     # Fallback defaults if ibdev2netdev not available
     GLOO_IF="${GLOO_IF:-enp1s0f1np1}"
     TP_IF="${TP_IF:-enp1s0f1np1}"
     NCCL_IF="${NCCL_IF:-enp1s0f1np1}"
-    UCX_DEV="${UCX_DEV:-enP2p1s0f1np1}"
+    UCX_DEV="${UCX_DEV:-enp1s0f1np1}"
   fi
 fi
 
 # Auto-detect InfiniBand HCAs using ibdev2netdev (or use override)
 if [ -z "${NCCL_IB_HCA:-}" ]; then
-  if command -v ibdev2netdev >/dev/null 2>&1; then
-    # Get active IB devices (those showing "Up" status)
-    IB_DEVICES=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $1}' | sort | tr '\n' ',' | sed 's/,$//')
-    if [ -n "${IB_DEVICES}" ]; then
-      NCCL_IB_HCA="${IB_DEVICES}"
-    else
-      # Fallback: use all IB devices if none show as Up
-      IB_DEVICES=$(ls -1 /sys/class/infiniband/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-      NCCL_IB_HCA="${IB_DEVICES:-mlx5_0,mlx5_1}"
-    fi
+  IB_DEVICES=$(discover_all_roce_hcas)
+  if [ -n "${IB_DEVICES}" ]; then
+    NCCL_IB_HCA="${IB_DEVICES}"
   else
-    # Fallback if ibdev2netdev not available
+    # Fallback: use all IB devices from sysfs
     IB_DEVICES=$(ls -1 /sys/class/infiniband/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')
     NCCL_IB_HCA="${IB_DEVICES:-mlx5_0,mlx5_1}"
   fi
 fi
+
+# Set OMPI_MCA for MPI-based communication (needed for some frameworks)
+OMPI_MCA_IF="${NCCL_IF}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -105,11 +158,13 @@ log "  Model:           ${MODEL}"
 log "  Tensor Parallel: ${TENSOR_PARALLEL}"
 log "  Ray Version:     ${RAY_VERSION}"
 log ""
-log "Network Configuration (auto-detected):"
+log "Network Configuration (auto-detected from RoCE):"
+log "  Primary RoCE IF: ${PRIMARY_ROCE_IF:-<not detected>}"
 log "  GLOO Interface:  ${GLOO_IF}"
 log "  TP Interface:    ${TP_IF}"
 log "  NCCL Interface:  ${NCCL_IF}"
 log "  UCX Device:      ${UCX_DEV}"
+log "  OMPI MCA IF:     ${OMPI_MCA_IF}"
 log "  NCCL IB HCAs:    ${NCCL_IB_HCA}"
 log ""
 if [ -n "${HF_TOKEN}" ]; then
@@ -138,21 +193,29 @@ fi
 
 log "Step 3/8: Starting head container"
 
-# Build environment variable args
+# Build environment variable args for RoCE/NCCL configuration
+# These are passed into the container to ensure NCCL uses the 200 Gb link
 ENV_ARGS=(
   -e VLLM_HOST_IP="${HEAD_IP}"
+  # RoCE interface settings - all pointing to the 200 Gb ConnectX-7 NIC
   -e GLOO_SOCKET_IFNAME="${GLOO_IF}"
   -e TP_SOCKET_IFNAME="${TP_IF}"
   -e NCCL_SOCKET_IFNAME="${NCCL_IF}"
   -e UCX_NET_DEVICES="${UCX_DEV}"
+  -e OMPI_MCA_btl_tcp_if_include="${OMPI_MCA_IF}"
+  # NCCL IB/RoCE settings
   -e NCCL_IB_DISABLE=0
-  -e NCCL_DEBUG=INFO
-  -e NCCL_DEBUG_SUBSYS=INIT,NET
   -e NCCL_IB_HCA="${NCCL_IB_HCA}"
   -e NCCL_NET_GDR_LEVEL=5
+  # Debug settings (can be disabled for production by setting NCCL_DEBUG=WARN)
+  -e NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
+  -e NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
+  # NVIDIA/GPU settings
   -e NVIDIA_VISIBLE_DEVICES=all
   -e NVIDIA_DRIVER_CAPABILITIES=all
+  # Ray settings
   -e RAY_memory_usage_threshold=0.998
+  # HuggingFace cache
   -e HF_HOME=/root/.cache/huggingface
 )
 

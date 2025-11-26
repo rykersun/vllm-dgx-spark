@@ -13,8 +13,55 @@ HF_CACHE="${HF_CACHE:-/raid/hf-cache}"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Auto-detect Network Configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DGX Spark uses RoCE (RDMA over Converged Ethernet) with ConnectX-7 NICs.
+# Interface names are enp1s0f1np1 or enP2p1s0f1np1, NOT ib0/ib1.
+# We prefer enp1* interfaces over enP2p* per NVIDIA's NCCL playbook.
+# WORKER_IP must be the 169.254.x.x link-local address on the RoCE interface.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# HEAD_IP is required - must be provided or auto-detected from worker node
+# Discover primary RoCE interface using ibdev2netdev
+discover_roce_interface() {
+  if command -v ibdev2netdev >/dev/null 2>&1; then
+    # Get active (Up) RoCE interfaces, preferring enp1* over enP2p*
+    local active_line
+    active_line=$(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print;}' | grep 'enp1' | head -n1)
+    if [ -z "$active_line" ]; then
+      active_line=$(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print;}' | head -n1)
+    fi
+
+    if [ -n "$active_line" ]; then
+      # Extract interface name (5th field, removing parentheses)
+      echo "$active_line" | awk '{print $5}' | tr -d '()'
+    fi
+  fi
+}
+
+# Get all active RoCE HCAs (comma-separated for NCCL_IB_HCA)
+discover_all_roce_hcas() {
+  if command -v ibdev2netdev >/dev/null 2>&1; then
+    ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $1}' | sort | tr '\n' ',' | sed 's/,$//'
+  fi
+}
+
+# Get the 169.254.x.x link-local IP from a RoCE interface
+get_roce_ip() {
+  local iface="$1"
+  if [ -n "$iface" ]; then
+    # Prefer 169.254.x.x (link-local) addresses for RoCE
+    local ip
+    ip=$(ip -o addr show "$iface" 2>/dev/null | grep "inet " | awk '{print $4}' | cut -d'/' -f1 | grep "^169\.254\." | head -1)
+    if [ -z "$ip" ]; then
+      # Fall back to any IPv4 address on the interface
+      ip=$(ip -o addr show "$iface" 2>/dev/null | grep "inet " | awk '{print $4}' | cut -d'/' -f1 | head -1)
+    fi
+    echo "$ip"
+  fi
+}
+
+# Auto-detect primary RoCE interface
+PRIMARY_ROCE_IF=$(discover_roce_interface)
+
+# HEAD_IP is required - must be provided (it's the head node's RoCE IP)
 if [ -z "${HEAD_IP:-}" ]; then
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -25,14 +72,15 @@ if [ -z "${HEAD_IP:-}" ]; then
   echo ""
   echo "Prerequisites:"
   echo "  1. ✅ Head node must be running first"
-  echo "  2. ✅ You need the head node's InfiniBand IP address"
+  echo "  2. ✅ You need the head node's RoCE/InfiniBand IP (169.254.x.x)"
   echo ""
   echo "To find the head node IP:"
   echo "  - Check the output from start_head_vllm.sh (shown as 'Head IP')"
-  echo "  - OR run on head node: ip addr show | grep 169.254"
+  echo "  - OR run on head node: ibdev2netdev  # to find the RoCE interface"
+  echo "  - Then: ip addr show <interface> | grep 169.254"
   echo ""
   echo "Then set HEAD_IP and run this script:"
-  echo "  export HEAD_IP=169.254.103.56  # Use your head node's actual IP"
+  echo "  export HEAD_IP=169.254.x.x  # Use your head node's RoCE IP"
   echo "  bash start_worker_vllm.sh"
   echo ""
   echo "Note: Everything else (WORKER_IP, network interfaces) will be auto-detected!"
@@ -42,67 +90,58 @@ if [ -z "${HEAD_IP:-}" ]; then
   exit 1
 fi
 
-# Auto-detect WORKER_IP from InfiniBand interface (or use override)
+# Auto-detect WORKER_IP from RoCE interface (or use override)
 if [ -z "${WORKER_IP:-}" ]; then
-  if command -v ibdev2netdev >/dev/null 2>&1; then
-    # Get the first active IB interface, prioritizing enp1<...> over enP2p<...>
-    PRIMARY_IB_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | grep "^enp1" | head -1)
-    if [ -z "${PRIMARY_IB_IF}" ]; then
-      # Fallback to any active IB interface
-      PRIMARY_IB_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | head -1)
-    fi
-    if [ -n "${PRIMARY_IB_IF}" ]; then
-      WORKER_IP=$(ip -o addr show "${PRIMARY_IB_IF}" 2>/dev/null | awk '{print $4}' | cut -d'/' -f1 | head -1)
-    fi
+  if [ -n "${PRIMARY_ROCE_IF}" ]; then
+    WORKER_IP=$(get_roce_ip "${PRIMARY_ROCE_IF}")
   fi
   # Final fallback if auto-detection fails
-  if [ -z "${WORKER_IP}" ]; then
-    echo "ERROR: Could not auto-detect WORKER_IP. Please set WORKER_IP environment variable."
+  if [ -z "${WORKER_IP:-}" ]; then
+    echo "ERROR: Could not auto-detect WORKER_IP from RoCE interface."
+    echo ""
+    echo "Please ensure:"
+    echo "  1. The 200 Gb cable is connected between Spark nodes"
+    echo "  2. Run 'ibdev2netdev' to verify RoCE interfaces are Up"
+    echo "  3. Check that a 169.254.x.x IP is assigned to the RoCE interface"
+    echo ""
+    echo "Then either:"
+    echo "  - Fix the interface and re-run this script, OR"
+    echo "  - Set WORKER_IP manually: export WORKER_IP=169.254.x.x"
     exit 1
   fi
 fi
 
-# Auto-detect network interfaces from active InfiniBand devices
+# Auto-detect network interfaces from active RoCE devices
 if [ -z "${GLOO_IF:-}" ] || [ -z "${TP_IF:-}" ] || [ -z "${NCCL_IF:-}" ] || [ -z "${UCX_DEV:-}" ]; then
-  if command -v ibdev2netdev >/dev/null 2>&1; then
-    # Get active interfaces, prioritizing enp1<...> over enP2p<...>
-    PRIMARY_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | grep "^enp1" | head -1)
-    SECONDARY_IF=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $5}' | grep "^enP2p" | head -1)
-
-    # Use primary interface for GLOO, TP, and NCCL
-    GLOO_IF="${GLOO_IF:-${PRIMARY_IF}}"
-    TP_IF="${TP_IF:-${PRIMARY_IF}}"
-    NCCL_IF="${NCCL_IF:-${PRIMARY_IF}}"
-
-    # Use secondary interface for UCX if available, otherwise use primary
-    UCX_DEV="${UCX_DEV:-${SECONDARY_IF:-${PRIMARY_IF}}}"
+  if [ -n "${PRIMARY_ROCE_IF}" ]; then
+    # Use primary RoCE interface for all NCCL/GLOO/TP/UCX communication
+    GLOO_IF="${GLOO_IF:-${PRIMARY_ROCE_IF}}"
+    TP_IF="${TP_IF:-${PRIMARY_ROCE_IF}}"
+    NCCL_IF="${NCCL_IF:-${PRIMARY_ROCE_IF}}"
+    UCX_DEV="${UCX_DEV:-${PRIMARY_ROCE_IF}}"
   else
     # Fallback defaults if ibdev2netdev not available
     GLOO_IF="${GLOO_IF:-enp1s0f1np1}"
     TP_IF="${TP_IF:-enp1s0f1np1}"
     NCCL_IF="${NCCL_IF:-enp1s0f1np1}"
-    UCX_DEV="${UCX_DEV:-enP2p1s0f1np1}"
+    UCX_DEV="${UCX_DEV:-enp1s0f1np1}"
   fi
 fi
 
 # Auto-detect InfiniBand HCAs using ibdev2netdev (or use override)
 if [ -z "${NCCL_IB_HCA:-}" ]; then
-  if command -v ibdev2netdev >/dev/null 2>&1; then
-    # Get active IB devices (those showing "Up" status)
-    IB_DEVICES=$(ibdev2netdev 2>/dev/null | grep "(Up)" | awk '{print $1}' | sort | tr '\n' ',' | sed 's/,$//')
-    if [ -n "${IB_DEVICES}" ]; then
-      NCCL_IB_HCA="${IB_DEVICES}"
-    else
-      # Fallback: use all IB devices if none show as Up
-      IB_DEVICES=$(ls -1 /sys/class/infiniband/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-      NCCL_IB_HCA="${IB_DEVICES:-mlx5_0,mlx5_1}"
-    fi
+  IB_DEVICES=$(discover_all_roce_hcas)
+  if [ -n "${IB_DEVICES}" ]; then
+    NCCL_IB_HCA="${IB_DEVICES}"
   else
-    # Fallback if ibdev2netdev not available
+    # Fallback: use all IB devices from sysfs
     IB_DEVICES=$(ls -1 /sys/class/infiniband/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')
     NCCL_IB_HCA="${IB_DEVICES:-mlx5_0,mlx5_1}"
   fi
 fi
+
+# Set OMPI_MCA for MPI-based communication (needed for some frameworks)
+OMPI_MCA_IF="${NCCL_IF}"
 
 # Generate unique worker name based on hostname
 WORKER_NAME="ray-worker-$(hostname -s)"
@@ -128,11 +167,13 @@ log "  Head IP:       ${HEAD_IP}"
 log "  Worker IP:     ${WORKER_IP} (auto-detected)"
 log "  Ray Version:   ${RAY_VERSION}"
 log ""
-log "Network Configuration (auto-detected):"
+log "Network Configuration (auto-detected from RoCE):"
+log "  Primary RoCE IF: ${PRIMARY_ROCE_IF:-<not detected>}"
 log "  GLOO Interface:  ${GLOO_IF}"
 log "  TP Interface:    ${TP_IF}"
 log "  NCCL Interface:  ${NCCL_IF}"
 log "  UCX Device:      ${UCX_DEV}"
+log "  OMPI MCA IF:     ${OMPI_MCA_IF}"
 log "  NCCL IB HCAs:    ${NCCL_IB_HCA}"
 log ""
 
@@ -162,6 +203,9 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 log "Step 4/6: Starting worker container"
+
+# Build environment variable args for RoCE/NCCL configuration
+# These are passed into the container to ensure NCCL uses the 200 Gb link
 docker run -d \
   --restart unless-stopped \
   --name "${WORKER_NAME}" \
@@ -172,15 +216,17 @@ docker run -d \
   --ulimit stack=67108864 \
   --device=/dev/infiniband \
   -v "${HF_CACHE}:/root/.cache/huggingface" \
+  -e VLLM_HOST_IP="${WORKER_IP}" \
   -e GLOO_SOCKET_IFNAME="${GLOO_IF}" \
   -e TP_SOCKET_IFNAME="${TP_IF}" \
   -e NCCL_SOCKET_IFNAME="${NCCL_IF}" \
   -e UCX_NET_DEVICES="${UCX_DEV}" \
+  -e OMPI_MCA_btl_tcp_if_include="${OMPI_MCA_IF}" \
   -e NCCL_IB_DISABLE=0 \
-  -e NCCL_DEBUG=INFO \
-  -e NCCL_DEBUG_SUBSYS=INIT,NET \
   -e NCCL_IB_HCA="${NCCL_IB_HCA}" \
   -e NCCL_NET_GDR_LEVEL=5 \
+  -e NCCL_DEBUG="${NCCL_DEBUG:-INFO}" \
+  -e NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}" \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
   -e RAY_memory_usage_threshold=0.995 \
