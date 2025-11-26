@@ -10,7 +10,7 @@ IMAGE="${IMAGE:-nvcr.io/nvidia/vllm:25.10-py3}"
 NAME="${NAME:-ray-head}"
 HF_CACHE="${HF_CACHE:-/raid/hf-cache}"
 HF_TOKEN="${HF_TOKEN:-}"  # Set via: export HF_TOKEN=hf_xxx
-RAY_VERSION="${RAY_VERSION:-2.51.0}"
+RAY_VERSION="${RAY_VERSION:-2.52.0}"
 
 # Model configuration
 MODEL="${MODEL:-openai/gpt-oss-120b}"
