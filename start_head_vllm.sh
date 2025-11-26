@@ -251,7 +251,7 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 log "Step 5/10: Installing Ray ${RAY_VERSION}"
-if ! docker exec "${NAME}" bash -lc "pip install -q -U 'ray==${RAY_VERSION}'"; then
+if ! docker exec "${NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}'"; then
   error "Failed to install Ray"
 fi
 
@@ -279,7 +279,7 @@ fi
 if ! docker exec "${NAME}" bash -lc "
   export HF_HOME=/root/.cache/huggingface
   echo '  Downloading model files (excluding original/* and metal/* to save space)...'
-  huggingface-cli download ${MODEL} ${HF_TOKEN_ARG} --exclude 'original/*' --exclude 'metal/*' 2>&1 | tail -5
+  hf download ${MODEL} ${HF_TOKEN_ARG} --exclude 'original/*' --exclude 'metal/*' 2>&1 | tail -5
 "; then
   error "Failed to download model ${MODEL}"
 fi

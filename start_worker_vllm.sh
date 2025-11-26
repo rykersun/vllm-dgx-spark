@@ -281,7 +281,7 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 log "Step 6/8: Installing Ray ${RAY_VERSION}"
-if ! docker exec "${WORKER_NAME}" bash -lc "pip install -q -U 'ray==${RAY_VERSION}'"; then
+if ! docker exec "${WORKER_NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}'"; then
   error "Failed to install Ray"
 fi
 
@@ -308,11 +308,11 @@ if [ -n "${HF_TOKEN}" ]; then
   HF_TOKEN_ARG="--token ${HF_TOKEN}"
 fi
 
-# Download model with verification
+# Download model with verification (using 'hf download' instead of deprecated 'huggingface-cli download')
 if ! docker exec "${WORKER_NAME}" bash -lc "
   export HF_HOME=/root/.cache/huggingface
   echo '  Downloading model files (excluding original/* and metal/* to save space)...'
-  huggingface-cli download ${MODEL} ${HF_TOKEN_ARG} --exclude 'original/*' --exclude 'metal/*' 2>&1 | tail -5
+  hf download ${MODEL} ${HF_TOKEN_ARG} --exclude 'original/*' --exclude 'metal/*' 2>&1 | tail -5
 "; then
   error "Failed to download model ${MODEL}"
 fi
@@ -346,15 +346,18 @@ docker exec "${WORKER_NAME}" bash -lc "
 log "  Worker started, waiting for cluster registration..."
 
 # Wait for worker to join cluster with progress indicator
+# Check for multiple nodes in the cluster (more reliable than "Healthy:" which may not appear immediately)
 START_TIME=$(date +%s)
 CONNECTED=false
 for i in {1..60}; do
   CURRENT_TIME=$(date +%s)
   ELAPSED=$((CURRENT_TIME - START_TIME))
 
-  if docker exec "${WORKER_NAME}" bash -lc "ray status --address=${HEAD_IP}:6380 2>/dev/null | grep -q 'Healthy:'" 2>/dev/null; then
+  # Check if ray status shows more than 1 node (head + this worker)
+  NODE_COUNT=$(docker exec "${WORKER_NAME}" bash -lc "ray status --address=${HEAD_IP}:6380 2>/dev/null | grep -E '^ [0-9]+ node_' | wc -l" 2>/dev/null || echo "0")
+  if [ "${NODE_COUNT}" -ge 2 ]; then
     echo ""
-    log "  ✅ Worker connected to cluster (${ELAPSED}s)"
+    log "  ✅ Worker connected to cluster (${ELAPSED}s) - ${NODE_COUNT} nodes active"
     CONNECTED=true
     break
   fi
@@ -369,8 +372,8 @@ done
 
 if [ "${CONNECTED}" != "true" ]; then
   echo ""
-  log "  ⚠️  Worker may not be connected after 60s"
-  log "     Check cluster status from head:"
+  log "  ⚠️  Connection check timed out after 60s"
+  log "     The worker may still be connected - verify from head node:"
   log "     docker exec ray-head ray status --address=127.0.0.1:6380"
 fi
 
