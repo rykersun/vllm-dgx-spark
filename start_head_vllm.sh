@@ -6,7 +6,7 @@ set -euo pipefail
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Configuration
-IMAGE="${IMAGE:-nvcr.io/nvidia/vllm:25.10-py3}"
+IMAGE="${IMAGE:-nvcr.io/nvidia/vllm:25.11-py3}"
 NAME="${NAME:-ray-head}"
 HF_CACHE="${HF_CACHE:-/raid/hf-cache}"
 HF_TOKEN="${HF_TOKEN:-}"  # Set via: export HF_TOKEN=hf_xxx

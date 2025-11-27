@@ -181,7 +181,7 @@ The primary script for setting up the head node with vLLM distributed inference.
 
 **Features:**
 - **Auto-detects** InfiniBand IP and network interfaces using `ibdev2netdev`
-- Pulls NVIDIA vLLM Docker image (nvcr.io/nvidia/vllm:25.10-py3)
+- Pulls NVIDIA vLLM Docker image (nvcr.io/nvidia/vllm:25.11-py3)
 - Starts container with InfiniBand support
 - Installs Ray 2.51.0 (for version compatibility)
 - Starts Ray head node
@@ -925,7 +925,7 @@ docker rm ray-head
 
 ## Version Information
 
-- **Base Image**: `nvcr.io/nvidia/vllm:25.10-py3`
+- **Base Image**: `nvcr.io/nvidia/vllm:25.11-py3`
 - **Ray Version**: `2.51.0` (installed via pip, overrides container version)
 - **Python**: 3.x (from container)
 - **CUDA**: Included in NVIDIA container
