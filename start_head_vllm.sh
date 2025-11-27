@@ -13,8 +13,9 @@ HF_TOKEN="${HF_TOKEN:-}"  # Set via: export HF_TOKEN=hf_xxx
 RAY_VERSION="${RAY_VERSION:-2.52.0}"
 
 # Worker node configuration (for orchestrated setup)
-# Set WORKER_HOST to enable automatic worker setup from head node
-WORKER_HOST="${WORKER_HOST:-192.168.7.111}"  # Default to second DGX Spark
+# WORKER_HOST must be set to enable automatic worker setup from head node
+# This should be the standard Ethernet IP for SSH access
+WORKER_HOST="${WORKER_HOST:-}"  # Required - no default (user must set this)
 WORKER_USER="${WORKER_USER:-$(whoami)}"
 WORKER_HF_CACHE="${WORKER_HF_CACHE:-${HF_CACHE}}"  # Worker's HF cache path (same as head by default)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -134,6 +135,109 @@ error() {
   exit 1
 }
 
+# Step counter - incremented before each step
+CURRENT_STEP=0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Pre-flight Checks
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Pre-flight Checks"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+PREFLIGHT_FAILED=false
+
+# Check 1: WORKER_HOST must be set for distributed setup
+echo "Checking WORKER_HOST..."
+if [ -z "${WORKER_HOST}" ]; then
+  echo "  ❌ WORKER_HOST is not set"
+  echo ""
+  echo "  For distributed inference, you must set WORKER_HOST to the worker's"
+  echo "  Ethernet IP address (for SSH access). Example:"
+  echo ""
+  echo "    export WORKER_HOST=192.168.7.111"
+  echo ""
+  echo "  Note: This is the standard Ethernet IP, not the InfiniBand IP."
+  echo "  The InfiniBand IP (HEAD_IP) is auto-detected from this node."
+  echo ""
+  PREFLIGHT_FAILED=true
+else
+  echo "  ✅ WORKER_HOST=${WORKER_HOST}"
+fi
+
+# Check 2: SSH connectivity to worker
+if [ -n "${WORKER_HOST}" ]; then
+  echo ""
+  echo "Checking SSH connectivity to worker..."
+  if ssh -o BatchMode=yes -o ConnectTimeout=5 "${WORKER_USER}@${WORKER_HOST}" "echo 'SSH OK'" >/dev/null 2>&1; then
+    echo "  ✅ SSH to ${WORKER_USER}@${WORKER_HOST} successful"
+  else
+    echo "  ❌ Cannot SSH to ${WORKER_USER}@${WORKER_HOST}"
+    echo ""
+    echo "  Passwordless SSH must be configured. Run:"
+    echo ""
+    echo "    ssh-copy-id ${WORKER_USER}@${WORKER_HOST}"
+    echo ""
+    echo "  Note: You also need passwordless SSH to the worker's InfiniBand IP"
+    echo "  for NCCL communication. If your worker has IB IP 169.254.x.x, also run:"
+    echo ""
+    echo "    ssh-copy-id ${WORKER_USER}@<worker-infiniband-ip>"
+    echo ""
+    PREFLIGHT_FAILED=true
+  fi
+fi
+
+# Check 3: Docker available
+echo ""
+echo "Checking Docker..."
+if command -v docker >/dev/null 2>&1; then
+  echo "  ✅ Docker is available"
+else
+  echo "  ❌ Docker is not installed or not in PATH"
+  PREFLIGHT_FAILED=true
+fi
+
+# Check 4: NVIDIA GPU access
+echo ""
+echo "Checking NVIDIA GPU access..."
+if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+  echo "  ✅ NVIDIA GPU access via Docker is working"
+else
+  echo "  ❌ Cannot access NVIDIA GPUs via Docker"
+  echo "  Ensure nvidia-container-toolkit is installed"
+  PREFLIGHT_FAILED=true
+fi
+
+# Check 5: InfiniBand detection (already done above, but summarize)
+echo ""
+echo "Checking InfiniBand..."
+if [ -n "${PRIMARY_IB_IF}" ]; then
+  echo "  ✅ InfiniBand interface detected: ${PRIMARY_IB_IF}"
+  echo "  ✅ Head IP (auto-detected): ${HEAD_IP}"
+else
+  echo "  ❌ No active InfiniBand interface detected"
+  echo "  Run 'ibdev2netdev' to check interface status"
+  PREFLIGHT_FAILED=true
+fi
+
+echo ""
+
+# Exit if any pre-flight check failed
+if [ "$PREFLIGHT_FAILED" = true ]; then
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "❌ Pre-flight checks failed. Please fix the issues above and re-run."
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit 1
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "✅ All pre-flight checks passed"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 log "Starting DGX Spark vLLM Head Node Setup"
@@ -176,25 +280,19 @@ log ""
 
 # Calculate total steps based on whether worker orchestration is enabled
 if [ -n "${WORKER_HOST}" ]; then
-  TOTAL_STEPS=13
+  TOTAL_STEPS=12
 else
-  TOTAL_STEPS=10
+  TOTAL_STEPS=9
 fi
-STEP=0
 
-next_step() {
-  STEP=$((STEP + 1))
-  echo "${STEP}/${TOTAL_STEPS}"
-}
-
-log "Step $(next_step): Pulling Docker image"
+log "Step 1/${TOTAL_STEPS}: Pulling Docker image"
 if ! docker pull "${IMAGE}"; then
   error "Failed to pull image ${IMAGE}"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Cleaning old container"
+log "Step 2/${TOTAL_STEPS}: Cleaning old container"
 if docker ps -a --format '{{.Names}}' | grep -qx "${NAME}"; then
   log "  Removing existing container: ${NAME}"
   docker rm -f "${NAME}" >/dev/null
@@ -202,7 +300,7 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Starting head container"
+log "Step 3/${TOTAL_STEPS}: Starting head container"
 
 # Build environment variable args for IB/NCCL configuration
 # These are passed into the container to ensure NCCL uses the IB/RoCE link
@@ -259,7 +357,7 @@ log "  Container started successfully"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Installing RDMA/InfiniBand libraries for NCCL"
+log "Step 4/${TOTAL_STEPS}: Installing RDMA/InfiniBand libraries for NCCL"
 log "  These libraries are required for NCCL to use InfiniBand/RoCE instead of Ethernet"
 if ! docker exec "${NAME}" bash -lc "
   apt-get update -qq >/dev/null 2>&1
@@ -284,7 +382,7 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Installing Ray ${RAY_VERSION}"
+log "Step 5/${TOTAL_STEPS}: Installing Ray ${RAY_VERSION}"
 if ! docker exec "${NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}'"; then
   error "Failed to install Ray"
 fi
@@ -299,7 +397,7 @@ log "  Ray ${INSTALLED_RAY_VERSION} installed"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Pre-downloading model weights"
+log "Step 6/${TOTAL_STEPS}: Pre-downloading model weights"
 log "  Model: ${MODEL}"
 log "  This may take a while for large models on first download..."
 
@@ -341,7 +439,7 @@ log "  Model download complete and verified"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if [ -n "${WORKER_HOST}" ]; then
-  log "Step $(next_step): Syncing model to worker node"
+  log "Step 7/${TOTAL_STEPS}: Syncing model to worker node"
   log "  Worker host: ${WORKER_USER}@${WORKER_HOST}"
   log "  Source: ${HF_CACHE}/"
   log "  Destination: ${WORKER_HF_CACHE}/"
@@ -390,7 +488,7 @@ if [ -n "${WORKER_HOST}" ]; then
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  log "Step $(next_step): Copying worker script to worker node"
+  log "Step 8/${TOTAL_STEPS}: Copying worker script to worker node"
   WORKER_SCRIPT="${SCRIPT_DIR}/start_worker_vllm.sh"
 
   if [ ! -f "${WORKER_SCRIPT}" ]; then
@@ -406,7 +504,13 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Starting Ray head"
+# Step number depends on whether worker orchestration steps ran
+if [ -n "${WORKER_HOST}" ]; then
+  RAY_STEP=9
+else
+  RAY_STEP=7
+fi
+log "Step ${RAY_STEP}/${TOTAL_STEPS}: Starting Ray head"
 docker exec "${NAME}" bash -lc "
   ray stop --force 2>/dev/null || true
   ray start --head \
@@ -434,7 +538,7 @@ done
 
 if [ -n "${WORKER_HOST}" ]; then
   # Orchestrated mode: Start worker via SSH
-  log "Step $(next_step): Starting worker node via SSH"
+  log "Step 10/${TOTAL_STEPS}: Starting worker node via SSH"
   log "  Starting worker script on ${WORKER_USER}@${WORKER_HOST}..."
   log ""
 
@@ -489,7 +593,7 @@ if [ -n "${WORKER_HOST}" ]; then
 
 else
   # Manual mode: Wait for user to start workers
-  log "Step $(next_step): Waiting for worker nodes"
+  log "Step 8/${TOTAL_STEPS}: Waiting for worker nodes"
   log ""
   log "  ⚠️  IMPORTANT: Before proceeding, ensure all worker nodes have:"
   log "     1. Downloaded the model: export MODEL=${MODEL} && bash start_worker_vllm.sh"
@@ -528,7 +632,13 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Starting vLLM server"
+# Step number depends on whether worker orchestration was used
+if [ -n "${WORKER_HOST}" ]; then
+  VLLM_STEP=11
+else
+  VLLM_STEP=8
+fi
+log "Step ${VLLM_STEP}/${TOTAL_STEPS}: Starting vLLM server"
 log ""
 
 # Kill any existing vLLM processes
@@ -665,7 +775,8 @@ log ""
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step $(next_step): Running health checks"
+# Final step is always TOTAL_STEPS
+log "Step ${TOTAL_STEPS}/${TOTAL_STEPS}: Running health checks"
 
 # Check Ray status
 RAY_NODES=$(docker exec "${NAME}" bash -lc "ray status --address=127.0.0.1:6380 2>/dev/null | grep 'Healthy:' -A1 | tail -1 | awk '{print \$1}'" || echo "0")

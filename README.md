@@ -43,9 +43,16 @@ We initially attempted to follow NVIDIA's playbook at https://build.nvidia.com/s
    - To use a different location, set `HF_CACHE` environment variable before running scripts
    - **⚠️ IMPORTANT:** Fix HuggingFace cache permissions on both nodes (see step below)
 
-5. **SSH Access**
-   - SSH keys configured for passwordless login between nodes
-   - Test: `ssh <worker-node-ip> hostname`
+5. **SSH Access** (for orchestrated multi-node setup)
+   - SSH keys configured for passwordless login to worker nodes
+   - The head node script uses SSH to:
+     1. Sync model files to workers (via rsync)
+     2. Start the worker script remotely
+   - Set up passwordless SSH to the worker's **Ethernet IP**:
+     ```bash
+     ssh-copy-id <worker-ethernet-ip>  # e.g., 192.168.7.111
+     ```
+   - Test: `ssh <worker-ethernet-ip> hostname`
 
 6. **HuggingFace Cache Permissions**
 
