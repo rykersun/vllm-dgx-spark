@@ -165,6 +165,12 @@ if [[ "$NODE_TYPE" == "head" ]] || [[ "$NODE_TYPE" == "interactive" ]]; then
     prompt_input "WORKER_HOST" "Enter worker node Ethernet IP" ""
     echo ""
 
+    # Worker node username (if different from current user)
+    echo "Worker Node Username (if different from current user):"
+    echo "  Leave blank to use current username: $(whoami)"
+    prompt_input "WORKER_USER" "Enter worker node username" "$(whoami)"
+    echo ""
+
     # Optional model configuration
     echo -e "${BLUE}Optional Configuration (press Enter to use defaults):${NC}"
     prompt_input "MODEL" "Model to serve" "openai/gpt-oss-120b"
@@ -209,6 +215,7 @@ echo ""
 if [[ "$NODE_TYPE" == "head" ]] || [[ "$NODE_TYPE" == "interactive" ]]; then
     [ -n "${HF_TOKEN:-}" ] && echo "  ✓ HF_TOKEN (hidden)"
     [ -n "${WORKER_HOST:-}" ] && echo "  ✓ WORKER_HOST=$WORKER_HOST"
+    [ -n "${WORKER_USER:-}" ] && echo "  ✓ WORKER_USER=$WORKER_USER"
     [ -n "${MODEL:-}" ] && echo "  ✓ MODEL=$MODEL"
     [ -n "${TENSOR_PARALLEL:-}" ] && echo "  ✓ TENSOR_PARALLEL=$TENSOR_PARALLEL"
     [ -n "${MAX_MODEL_LEN:-}" ] && echo "  ✓ MAX_MODEL_LEN=$MAX_MODEL_LEN"

@@ -223,6 +223,80 @@ else
   PREFLIGHT_FAILED=true
 fi
 
+# Check 6: Local HuggingFace cache permissions
+echo ""
+echo "Checking local HuggingFace cache permissions..."
+if [ -d "${HF_CACHE}" ]; then
+  if [ -w "${HF_CACHE}" ]; then
+    echo "  ✅ Local HF cache is writable (${HF_CACHE})"
+  else
+    echo "  ⚠️  Local HF cache is not writable: ${HF_CACHE}"
+    echo ""
+    echo "  Docker containers run as root and may have created files owned by root."
+    read -p "  Fix permissions now? (requires sudo) [y/N]: " fix_local_perms
+    if [[ "$fix_local_perms" =~ ^[Yy]$ ]]; then
+      if sudo chown -R "$USER" "${HF_CACHE}"; then
+        echo "  ✅ Local HF cache permissions fixed"
+      else
+        echo "  ❌ Failed to fix local permissions"
+        PREFLIGHT_FAILED=true
+      fi
+    else
+      echo "  ❌ Local HF cache permissions not fixed - rsync may fail"
+      PREFLIGHT_FAILED=true
+    fi
+  fi
+else
+  echo "  ℹ️  Local HF cache will be created at ${HF_CACHE}"
+fi
+
+# Check 7: Remote HuggingFace cache permissions (only if WORKER_HOST is set)
+if [ -n "${WORKER_HOST}" ]; then
+  echo ""
+  echo "Checking remote HuggingFace cache permissions on worker..."
+  REMOTE_HF_WRITABLE=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "${WORKER_USER}@${WORKER_HOST}" "
+    if [ -d '${WORKER_HF_CACHE}' ]; then
+      if [ -w '${WORKER_HF_CACHE}' ]; then
+        echo 'writable'
+      else
+        echo 'not_writable'
+      fi
+    else
+      echo 'not_exists'
+    fi
+  " 2>/dev/null || echo "ssh_failed")
+
+  case "$REMOTE_HF_WRITABLE" in
+    writable)
+      echo "  ✅ Remote HF cache is writable (${WORKER_HF_CACHE})"
+      ;;
+    not_writable)
+      echo "  ⚠️  Remote HF cache is not writable: ${WORKER_HF_CACHE}"
+      echo ""
+      echo "  Docker containers run as root and may have created files owned by root."
+      read -p "  Fix permissions on worker now? (requires sudo password on worker) [y/N]: " fix_remote_perms
+      if [[ "$fix_remote_perms" =~ ^[Yy]$ ]]; then
+        echo "  Running: sudo chown -R ${WORKER_USER} ${WORKER_HF_CACHE} on ${WORKER_HOST}"
+        if ssh -t "${WORKER_USER}@${WORKER_HOST}" "sudo chown -R ${WORKER_USER} '${WORKER_HF_CACHE}'"; then
+          echo "  ✅ Remote HF cache permissions fixed"
+        else
+          echo "  ❌ Failed to fix remote permissions"
+          PREFLIGHT_FAILED=true
+        fi
+      else
+        echo "  ❌ Remote HF cache permissions not fixed - rsync may fail"
+        PREFLIGHT_FAILED=true
+      fi
+      ;;
+    not_exists)
+      echo "  ℹ️  Remote HF cache will be created at ${WORKER_HF_CACHE}"
+      ;;
+    ssh_failed)
+      echo "  ⚠️  Could not check remote HF cache (SSH failed)"
+      ;;
+  esac
+fi
+
 echo ""
 
 # Exit if any pre-flight check failed
