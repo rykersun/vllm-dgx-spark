@@ -10,7 +10,9 @@ set -euo pipefail
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Configuration
-IMAGE="${IMAGE:-nvcr.io/nvidia/vllm:25.11-py3}"
+# Uses custom image built with eugr's approach for DGX Spark (CUDA 13 + Blackwell SM 12.1a)
+# See: https://github.com/eugr/spark-vllm-docker
+IMAGE="${IMAGE:-spark-vllm:latest}"
 RAY_VERSION="${RAY_VERSION:-2.52.0}"
 HF_CACHE="${HF_CACHE:-/raid/hf-cache}"
 HF_TOKEN="${HF_TOKEN:-}"  # Set via: export HF_TOKEN=hf_xxx
@@ -190,9 +192,29 @@ log "  ✅ Head is reachable"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 2/8: Pulling Docker image"
-if ! docker pull "${IMAGE}"; then
-  error "Failed to pull image ${IMAGE}"
+log "Step 2/8: Checking Docker image"
+# Check if image exists locally first (custom images like spark-vllm:latest won't need pulling)
+if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+  log "  ✅ Using local image: ${IMAGE}"
+else
+  # Check if we need to load from a tar file (transferred via IB)
+  if [ -f "/tmp/spark-vllm.tar" ]; then
+    log "  Loading image from /tmp/spark-vllm.tar..."
+    docker load -i /tmp/spark-vllm.tar
+  elif [[ "${IMAGE}" == spark-vllm:* ]]; then
+    # For spark-vllm images, the head should have transferred the image via IB
+    # If not available, we cannot build here (no Dockerfile on worker)
+    log "  ❌ Image ${IMAGE} not found on worker node."
+    log ""
+    log "  The spark-vllm image should be transferred from the head node."
+    log "  Make sure to run start_cluster.sh on the head node first."
+    error "Image not available - run start_cluster.sh on head node"
+  else
+    log "  Image not found locally, pulling from registry..."
+    if ! docker pull "${IMAGE}"; then
+      error "Failed to pull image ${IMAGE}"
+    fi
+  fi
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

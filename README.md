@@ -2,6 +2,19 @@
 
 Deploy [vLLM](https://github.com/vllm-project/vllm) on a dual-node NVIDIA DGX Spark cluster with InfiniBand RDMA for serving large language models.
 
+> **DISCLAIMER**: This project is NOT affiliated with, endorsed by, or officially supported by NVIDIA, vLLM, or any other organization. This is a community-driven effort to run vLLM on DGX Spark hardware. Use at your own risk. The software is provided "AS IS", without warranty of any kind.
+
+## Container Build Approach
+
+This project uses a custom-built Docker image based on the approach from [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker). The official NVIDIA NGC vLLM container (`nvcr.io/nvidia/vllm:25.x-py3`) has compatibility issues with the DGX Spark's Blackwell GB10 GPUs (CUDA 13 + SM 12.1a architecture).
+
+### Why Custom Build?
+- **CUDA 13 Support**: Uses `nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04` base image
+- **Blackwell Architecture**: Sets `TORCH_CUDA_ARCH_LIST=12.1a` for GB10 GPUs
+- **PyTorch CUDA 13**: Installs PyTorch with proper CUDA 13.0 bindings
+- **FastSafetensors Patch**: Enables efficient model loading in cluster configurations
+- **RDMA/InfiniBand**: Includes necessary libraries for high-speed inter-node communication
+
 ## Features
 
 - **Single-command deployment** - Start entire cluster from head node via SSH
@@ -544,9 +557,15 @@ vllm-dgx-spark/
 
 - [vLLM Documentation](https://docs.vllm.ai/)
 - [vLLM GitHub](https://github.com/vllm-project/vllm)
-- [NVIDIA vLLM Container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/vllm)
+- [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) - Custom container build approach for DGX Spark
+- [NVIDIA vLLM Container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/vllm) - Official NGC container (may have compatibility issues)
 - [NVIDIA DGX Spark vLLM Playbook](https://build.nvidia.com/spark/vllm/stacked-sparks)
 - [NVIDIA NCCL over InfiniBand](https://build.nvidia.com/spark/nccl/stacked-sparks)
+- [vLLM Blackwell GB10 Issue #28589](https://github.com/vllm-project/vllm/issues/28589) - Known issues with Blackwell support
+
+## Acknowledgments
+
+Special thanks to [Eugene R (@eugr)](https://github.com/eugr) for the original [spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) implementation that this project's container build approach is based on.
 
 ## License
 

@@ -31,9 +31,9 @@ WORKER_USER="${WORKER_USER:-$(whoami)}"
 WORKER_HF_CACHE="${WORKER_HF_CACHE:-${HF_CACHE}}"
 
 # Model configuration
-MODEL="${MODEL:-openai/gpt-oss-120b}"
+MODEL="${MODEL:-mistralai/Mistral-7B-Instruct-v0.3}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"
 SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
@@ -376,14 +376,37 @@ log ""
 
 # Calculate total steps based on whether worker orchestration is enabled
 if [ -n "${WORKER_HOST}" ]; then
-  TOTAL_STEPS=12
+  TOTAL_STEPS=13  # Includes image transfer step for workers
 else
   TOTAL_STEPS=9
 fi
 
-log "Step 1/${TOTAL_STEPS}: Pulling Docker image"
-if ! docker pull "${IMAGE}"; then
-  error "Failed to pull image ${IMAGE}"
+log "Step 1/${TOTAL_STEPS}: Checking Docker image"
+# Check if image exists locally first (custom images like spark-vllm:latest won't need pulling)
+if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+  log "  ✅ Using local image: ${IMAGE}"
+else
+  # For spark-vllm images, build from the docker/ directory in this repo
+  if [[ "${IMAGE}" == spark-vllm:* ]]; then
+    DOCKER_DIR="${SCRIPT_DIR}/docker"
+    if [ -f "${DOCKER_DIR}/Dockerfile" ]; then
+      log "  Image not found, building from ${DOCKER_DIR}..."
+      log "  This will take 20-40 minutes (compiling vLLM for Blackwell GPUs)..."
+      log ""
+      if ! docker build -t "${IMAGE}" "${DOCKER_DIR}"; then
+        error "Failed to build image ${IMAGE}"
+      fi
+      log "  ✅ Image built successfully"
+    else
+      error "Cannot build ${IMAGE} - Dockerfile not found at ${DOCKER_DIR}"
+    fi
+  else
+    # For other images, try to pull from registry
+    log "  Image not found locally, pulling from registry..."
+    if ! docker pull "${IMAGE}"; then
+      error "Failed to pull image ${IMAGE}"
+    fi
+  fi
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -536,7 +559,31 @@ log "  Model download complete and verified"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if [ -n "${WORKER_HOST}" ]; then
-  log "Step 7/${TOTAL_STEPS}: Syncing model to worker node"
+  # Transfer Docker image to worker if it's a custom spark-vllm image
+  if [[ "${IMAGE}" == spark-vllm:* ]]; then
+    log "Step 7/${TOTAL_STEPS}: Transferring Docker image to worker"
+
+    # Check if worker already has the image
+    WORKER_HAS_IMAGE=$(ssh -o BatchMode=yes "${WORKER_USER}@${WORKER_HOST}" "docker image inspect ${IMAGE} >/dev/null 2>&1 && echo 'yes' || echo 'no'" 2>/dev/null || echo "no")
+
+    if [ "${WORKER_HAS_IMAGE}" = "yes" ]; then
+      log "  ✅ Worker already has image: ${IMAGE}"
+    else
+      log "  Saving and transferring image via InfiniBand..."
+      log "  Image: ${IMAGE} ($(docker images ${IMAGE} --format '{{.Size}}'))"
+      log ""
+
+      # Save image and transfer via SSH pipe (uses IB if WORKER_HOST is IB IP)
+      if ! docker save "${IMAGE}" | ssh "${WORKER_USER}@${WORKER_HOST}" 'docker load'; then
+        error "Failed to transfer Docker image to worker"
+      fi
+      log "  ✅ Image transferred to worker"
+    fi
+  fi
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  log "Step 8/${TOTAL_STEPS}: Syncing model to worker node"
   log "  Worker host: ${WORKER_USER}@${WORKER_HOST}"
   log "  Source: ${HF_CACHE}/"
   log "  Destination: ${WORKER_HF_CACHE}/"
@@ -585,7 +632,7 @@ if [ -n "${WORKER_HOST}" ]; then
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  log "Step 8/${TOTAL_STEPS}: Copying worker script to worker node"
+  log "Step 9/${TOTAL_STEPS}: Copying worker script to worker node"
   WORKER_SCRIPT="${SCRIPT_DIR}/start_worker_vllm.sh"
 
   if [ ! -f "${WORKER_SCRIPT}" ]; then
@@ -603,7 +650,7 @@ fi
 
 # Step number depends on whether worker orchestration steps ran
 if [ -n "${WORKER_HOST}" ]; then
-  RAY_STEP=9
+  RAY_STEP=10
 else
   RAY_STEP=7
 fi
@@ -635,7 +682,7 @@ done
 
 if [ -n "${WORKER_HOST}" ]; then
   # Orchestrated mode: Start worker via SSH
-  log "Step 10/${TOTAL_STEPS}: Starting worker node via SSH"
+  log "Step 11/${TOTAL_STEPS}: Starting worker node via SSH"
   log "  Starting worker script on ${WORKER_USER}@${WORKER_HOST}..."
   log ""
 
@@ -731,7 +778,7 @@ fi
 
 # Step number depends on whether worker orchestration was used
 if [ -n "${WORKER_HOST}" ]; then
-  VLLM_STEP=11
+  VLLM_STEP=12
 else
   VLLM_STEP=8
 fi
