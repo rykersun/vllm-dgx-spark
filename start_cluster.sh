@@ -39,7 +39,7 @@ SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
 ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-true}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
-LOAD_FORMAT="${LOAD_FORMAT:-auto}"
+LOAD_FORMAT="${LOAD_FORMAT:-fastsafetensors}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # Ports
@@ -478,9 +478,9 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 5/${TOTAL_STEPS}: Installing Ray ${RAY_VERSION}"
-if ! docker exec "${NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}'"; then
-  error "Failed to install Ray"
+log "Step 5/${TOTAL_STEPS}: Installing Ray ${RAY_VERSION} and fastsafetensors"
+if ! docker exec "${NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}' 'vllm[fastsafetensors]'"; then
+  error "Failed to install Ray and fastsafetensors"
 fi
 
 # Verify Ray version
@@ -490,6 +490,7 @@ if [ "${INSTALLED_RAY_VERSION}" != "${RAY_VERSION}" ]; then
 fi
 
 log "  Ray ${INSTALLED_RAY_VERSION} installed"
+log "  fastsafetensors installed (GPU Direct Storage for faster model loading)"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
