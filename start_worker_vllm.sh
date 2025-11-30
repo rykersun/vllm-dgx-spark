@@ -72,7 +72,7 @@ if [ -z "${HEAD_IP:-}" ]; then
   echo "  2. ✅ You need the head node's InfiniBand/RoCE IP"
   echo ""
   echo "To find the head node IP:"
-  echo "  - Check the output from start_head_vllm.sh (shown as 'Head IP')"
+  echo "  - Check the output from start_cluster.sh (shown as 'Head IP')"
   echo "  - OR run on head node: ibdev2netdev  # to find the IB interface"
   echo "  - Then: ip addr show <interface>"
   echo ""

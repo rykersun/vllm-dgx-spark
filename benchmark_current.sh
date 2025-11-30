@@ -167,7 +167,7 @@ echo -e "${CYAN}▶${NC} Checking vLLM availability..."
 
 if ! curl -sf "${API_URL}/health" >/dev/null 2>&1; then
   print_fail "vLLM is not accessible at ${API_URL}"
-  echo "    Make sure vLLM is running: ./start_head_vllm.sh"
+  echo "    Make sure vLLM is running: ./start_cluster.sh"
   exit 1
 fi
 print_ok "vLLM is accessible"

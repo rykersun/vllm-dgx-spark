@@ -934,7 +934,7 @@ else
   echo ""
   echo "  For orchestrated setup (single command), set WORKER_HOST:"
   echo "    export WORKER_HOST=<worker_ip>"
-  echo "    bash start_head_vllm.sh"
+  echo "    bash start_cluster.sh"
   echo ""
 fi
 

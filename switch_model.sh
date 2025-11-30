@@ -195,9 +195,9 @@ get_current_model() {
     fi
   fi
 
-  # Fall back to reading start_head_vllm.sh
-  if [ -f "${SCRIPT_DIR}/start_head_vllm.sh" ]; then
-    grep '^MODEL=' "${SCRIPT_DIR}/start_head_vllm.sh" 2>/dev/null | head -1 | sed 's/MODEL="\${MODEL:-//' | sed 's/}"$//' || echo ""
+  # Fall back to reading start_cluster.sh
+  if [ -f "${SCRIPT_DIR}/start_cluster.sh" ]; then
+    grep '^MODEL=' "${SCRIPT_DIR}/start_cluster.sh" 2>/dev/null | head -1 | sed 's/MODEL="\${MODEL:-//' | sed 's/}"$//' || echo ""
   else
     echo ""
   fi
@@ -537,10 +537,10 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 log ""
-log "Updating start_head_vllm.sh configuration..."
+log "Updating start_cluster.sh configuration..."
 
-# Update the MODEL, TENSOR_PARALLEL, MAX_MODEL_LEN, GPU_MEMORY_UTIL in start_head_vllm.sh
-START_SCRIPT="${SCRIPT_DIR}/start_head_vllm.sh"
+# Update the MODEL, TENSOR_PARALLEL, MAX_MODEL_LEN, GPU_MEMORY_UTIL in start_cluster.sh
+START_SCRIPT="${SCRIPT_DIR}/start_cluster.sh"
 
 if [ -f "${START_SCRIPT}" ]; then
   # Update MODEL
@@ -571,7 +571,7 @@ if [ "${SKIP_RESTART}" = "true" ]; then
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   echo "To start the cluster with the new model:"
-  echo "  ./start_head_vllm.sh"
+  echo "  ./start_cluster.sh"
   echo ""
   exit 0
 fi

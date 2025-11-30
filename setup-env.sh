@@ -235,11 +235,11 @@ echo "  ✓ InfiniBand HCAs (NCCL_IB_HCA)"
 echo ""
 echo "Next steps:"
 if [[ "$NODE_TYPE" == "head" ]]; then
-    echo "  Run: bash start_head_vllm.sh"
+    echo "  Run: bash start_cluster.sh"
 elif [[ "$NODE_TYPE" == "worker" ]]; then
     echo "  Run: bash start_worker_vllm.sh"
 else
-    echo "  Head node: bash start_head_vllm.sh"
+    echo "  Head node: bash start_cluster.sh"
     echo "  Worker node: bash start_worker_vllm.sh"
 fi
 echo ""
