@@ -268,6 +268,13 @@ if [ "${DRY_RUN}" = "true" ]; then
   exit 0
 fi
 
+# Confirm before starting
+read -p "Start benchmarking ${#MODELS_TO_BENCHMARK[@]} models? This may take a while. (y/N): " CONFIRM
+if [ "${CONFIRM}" != "y" ] && [ "${CONFIRM}" != "Y" ]; then
+  echo "Cancelled."
+  exit 0
+fi
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Run Benchmarks
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
