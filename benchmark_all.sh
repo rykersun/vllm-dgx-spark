@@ -349,18 +349,18 @@ for idx in "${MODELS_TO_BENCHMARK[@]}"; do
     continue
   fi
 
-  # Switch to model
-  log "Switching to model..."
-  if ! "${SCRIPT_DIR}/switch_model.sh" --skip-download "${MODEL_NUM}" > /tmp/switch_${MODEL_NUM}.log 2>&1; then
+  # Switch to model (runs start_cluster.sh internally)
+  log "Switching to model (this may take several minutes)..."
+  if ! "${SCRIPT_DIR}/switch_model.sh" --skip-download "${MODEL_NUM}" 2>&1 | tee /tmp/switch_${MODEL_NUM}.log; then
     log "FAILED: Could not switch to ${MODEL_NAME}"
     echo "${MODEL_NAME},${MODEL_NODES[$idx]},N/A,N/A,N/A,N/A,SWITCH_FAILED" >> "${CSV_FILE}"
     FAILED=$((FAILED + 1))
     continue
   fi
 
-  # Wait for API to be ready (300s timeout = 5 minutes)
-  log "Waiting for API..."
-  if ! wait_for_api 300; then
+  # Wait for API to be ready (60s timeout - cluster should already be starting)
+  log "Verifying API is ready..."
+  if ! wait_for_api 60; then
     log "FAILED: API not ready for ${MODEL_NAME}"
     echo "${MODEL_NAME},${MODEL_NODES[$idx]},N/A,N/A,N/A,N/A,API_TIMEOUT" >> "${CSV_FILE}"
     FAILED=$((FAILED + 1))
