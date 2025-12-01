@@ -7,7 +7,7 @@ set -euo pipefail
 # Uses the official vLLM benchmarking tool for consistent, reproducible results.
 #
 # Usage:
-#   ./benchmark_current_vllm.sh [options]
+#   ./benchmark_current.sh [options]
 #
 # Options:
 #   -u, --url URL           vLLM API URL (default: auto-detect)
@@ -20,10 +20,10 @@ set -euo pipefail
 #   -h, --help              Show this help message
 #
 # Examples:
-#   ./benchmark_current_vllm.sh                    # Full benchmark (100 prompts)
-#   ./benchmark_current_vllm.sh --quick            # Quick benchmark (20 prompts)
-#   ./benchmark_current_vllm.sh --single           # Single request latency test
-#   ./benchmark_current_vllm.sh -n 50 -c 50        # Custom prompts/concurrency
+#   ./benchmark_current.sh                    # Full benchmark (100 prompts)
+#   ./benchmark_current.sh --quick            # Quick benchmark (20 prompts)
+#   ./benchmark_current.sh --single           # Single request latency test
+#   ./benchmark_current.sh -n 50 -c 50        # Custom prompts/concurrency
 #
 # Dataset:
 #   Uses ShareGPT_V3 dataset for realistic workload distribution.
@@ -351,7 +351,7 @@ echo ""
 
 # Diagnostic tip
 echo -e "  ${BOLD}Diagnostic:${NC}"
-echo -e "    To verify NCCL is using InfiniBand/RoCE: ./diagnose_nccl.sh --container"
+echo -e "    To verify NCCL is using InfiniBand/RoCE: ./checkout_setup.sh --diagnose"
 
 echo ""
 
@@ -363,16 +363,16 @@ echo ""
 echo -e "  ${BOLD}Quick Reference Commands:${NC}"
 echo ""
 echo "  # Run single-request latency test"
-echo "  ./benchmark_current_vllm.sh --single"
+echo "  ./benchmark_current.sh --single"
 echo ""
 echo "  # Run quick batch benchmark (20 prompts)"
-echo "  ./benchmark_current_vllm.sh --quick"
+echo "  ./benchmark_current.sh --quick"
 echo ""
 echo "  # Run full benchmark with JSON output"
-echo "  ./benchmark_current_vllm.sh -n 100 -o results.json"
+echo "  ./benchmark_current.sh -n 100 -o results.json"
 echo ""
 echo "  # Check NCCL/InfiniBand configuration"
-echo "  ./diagnose_nccl.sh --container"
+echo "  ./checkout_setup.sh --diagnose"
 echo ""
 
 exit $BENCH_EXIT_CODE
