@@ -22,7 +22,7 @@ IMAGE="${VLLM_IMAGE:-${IMAGE:-nvcr.io/nvidia/vllm:25.11-py3}}"
 NAME="${HEAD_CONTAINER_NAME:-${NAME:-ray-head}}"
 HF_CACHE="${HF_CACHE:-/raid/hf-cache}"
 HF_TOKEN="${HF_TOKEN:-}"
-RAY_VERSION="${RAY_VERSION:-2.52.0}"
+RAY_VERSION="${RAY_VERSION:-2.52.1}"
 
 # Worker node configuration (for orchestrated setup)
 # WORKER_IPS (or legacy WORKER_HOST) must be set to enable automatic worker setup
@@ -31,7 +31,7 @@ WORKER_USER="${WORKER_USER:-$(whoami)}"
 WORKER_HF_CACHE="${WORKER_HF_CACHE:-${HF_CACHE}}"
 
 # Model configuration
-MODEL="${MODEL:-openai/gpt-oss-20b}"
+MODEL="${MODEL:-openai/gpt-oss-120b}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"
@@ -376,37 +376,14 @@ log ""
 
 # Calculate total steps based on whether worker orchestration is enabled
 if [ -n "${WORKER_HOST}" ]; then
-  TOTAL_STEPS=13  # Includes image transfer step for workers
+  TOTAL_STEPS=12
 else
   TOTAL_STEPS=9
 fi
 
-log "Step 1/${TOTAL_STEPS}: Checking Docker image"
-# Check if image exists locally first (custom images like spark-vllm:latest won't need pulling)
-if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-  log "  ✅ Using local image: ${IMAGE}"
-else
-  # For spark-vllm images, build from the docker/ directory in this repo
-  if [[ "${IMAGE}" == spark-vllm:* ]]; then
-    DOCKER_DIR="${SCRIPT_DIR}/docker"
-    if [ -f "${DOCKER_DIR}/Dockerfile" ]; then
-      log "  Image not found, building from ${DOCKER_DIR}..."
-      log "  This will take 20-40 minutes (compiling vLLM for Blackwell GPUs)..."
-      log ""
-      if ! docker build -t "${IMAGE}" "${DOCKER_DIR}"; then
-        error "Failed to build image ${IMAGE}"
-      fi
-      log "  ✅ Image built successfully"
-    else
-      error "Cannot build ${IMAGE} - Dockerfile not found at ${DOCKER_DIR}"
-    fi
-  else
-    # For other images, try to pull from registry
-    log "  Image not found locally, pulling from registry..."
-    if ! docker pull "${IMAGE}"; then
-      error "Failed to pull image ${IMAGE}"
-    fi
-  fi
+log "Step 1/${TOTAL_STEPS}: Pulling Docker image"
+if ! docker pull "${IMAGE}"; then
+  error "Failed to pull image ${IMAGE}"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -478,7 +455,8 @@ log "  Container started successfully"
 
 log "Step 4/${TOTAL_STEPS}: Verifying RDMA/InfiniBand libraries for NCCL"
 log "  These libraries are required for NCCL to use InfiniBand/RoCE instead of Ethernet"
-# The spark-vllm container already has RDMA libraries installed - just verify
+# NVIDIA vLLM container already includes RDMA libraries (libibverbs, librdmacm, ibverbs-providers)
+# We just verify they're present rather than installing
 if docker exec "${NAME}" bash -lc "ldconfig -p 2>/dev/null | grep -q libibverbs"; then
   log "  ✅ RDMA libraries available (libibverbs, librdmacm)"
 else
@@ -488,30 +466,19 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 5/${TOTAL_STEPS}: Verifying container has required dependencies"
-# The spark-vllm container already has Ray, vLLM, and fastsafetensors properly built for CUDA 13
-# Do NOT pip install anything here as it would overwrite the custom builds
+log "Step 5/${TOTAL_STEPS}: Installing Ray ${RAY_VERSION} and fastsafetensors"
+if ! docker exec "${NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}' 'vllm[fastsafetensors]'"; then
+  error "Failed to install Ray and fastsafetensors"
+fi
 
-# Verify Ray is available
+# Verify Ray version
 INSTALLED_RAY_VERSION=$(docker exec "${NAME}" python3 -c "import ray; print(ray.__version__)" 2>/dev/null || echo "unknown")
-if [ "${INSTALLED_RAY_VERSION}" == "unknown" ]; then
-  error "Ray not found in container - ensure you're using the correct spark-vllm image"
+if [ "${INSTALLED_RAY_VERSION}" != "${RAY_VERSION}" ]; then
+  error "Ray version mismatch: expected ${RAY_VERSION}, got ${INSTALLED_RAY_VERSION}"
 fi
-log "  Ray ${INSTALLED_RAY_VERSION} available"
 
-# Verify vLLM is available
-INSTALLED_VLLM_VERSION=$(docker exec "${NAME}" python3 -c "import vllm; print(vllm.__version__)" 2>/dev/null || echo "unknown")
-if [ "${INSTALLED_VLLM_VERSION}" == "unknown" ]; then
-  error "vLLM not found in container - ensure you're using the correct spark-vllm image"
-fi
-log "  vLLM ${INSTALLED_VLLM_VERSION} available"
-
-# Verify CUDA is working
-CUDA_AVAILABLE=$(docker exec "${NAME}" python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "False")
-if [ "${CUDA_AVAILABLE}" != "True" ]; then
-  error "PyTorch CUDA not available - container may have incorrect PyTorch build"
-fi
-log "  PyTorch CUDA available"
+log "  Ray ${INSTALLED_RAY_VERSION} installed"
+log "  fastsafetensors installed (GPU Direct Storage for faster model loading)"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -557,31 +524,7 @@ log "  Model download complete and verified"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if [ -n "${WORKER_HOST}" ]; then
-  # Transfer Docker image to worker if it's a custom spark-vllm image
-  if [[ "${IMAGE}" == spark-vllm:* ]]; then
-    log "Step 7/${TOTAL_STEPS}: Transferring Docker image to worker"
-
-    # Check if worker already has the image
-    WORKER_HAS_IMAGE=$(ssh -o BatchMode=yes "${WORKER_USER}@${WORKER_HOST}" "docker image inspect ${IMAGE} >/dev/null 2>&1 && echo 'yes' || echo 'no'" 2>/dev/null || echo "no")
-
-    if [ "${WORKER_HAS_IMAGE}" = "yes" ]; then
-      log "  ✅ Worker already has image: ${IMAGE}"
-    else
-      log "  Saving and transferring image via InfiniBand..."
-      log "  Image: ${IMAGE} ($(docker images ${IMAGE} --format '{{.Size}}'))"
-      log ""
-
-      # Save image and transfer via SSH pipe (uses IB if WORKER_HOST is IB IP)
-      if ! docker save "${IMAGE}" | ssh "${WORKER_USER}@${WORKER_HOST}" 'docker load'; then
-        error "Failed to transfer Docker image to worker"
-      fi
-      log "  ✅ Image transferred to worker"
-    fi
-  fi
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  log "Step 8/${TOTAL_STEPS}: Syncing model to worker node"
+  log "Step 7/${TOTAL_STEPS}: Syncing model to worker node"
   log "  Worker host: ${WORKER_USER}@${WORKER_HOST}"
   log "  Source: ${HF_CACHE}/"
   log "  Destination: ${WORKER_HF_CACHE}/"
@@ -630,7 +573,7 @@ if [ -n "${WORKER_HOST}" ]; then
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  log "Step 9/${TOTAL_STEPS}: Copying worker script to worker node"
+  log "Step 8/${TOTAL_STEPS}: Copying worker script to worker node"
   WORKER_SCRIPT="${SCRIPT_DIR}/start_worker_vllm.sh"
 
   if [ ! -f "${WORKER_SCRIPT}" ]; then
@@ -648,7 +591,7 @@ fi
 
 # Step number depends on whether worker orchestration steps ran
 if [ -n "${WORKER_HOST}" ]; then
-  RAY_STEP=10
+  RAY_STEP=9
 else
   RAY_STEP=7
 fi
@@ -680,7 +623,7 @@ done
 
 if [ -n "${WORKER_HOST}" ]; then
   # Orchestrated mode: Start worker via SSH
-  log "Step 11/${TOTAL_STEPS}: Starting worker node via SSH"
+  log "Step 10/${TOTAL_STEPS}: Starting worker node via SSH"
   log "  Starting worker script on ${WORKER_USER}@${WORKER_HOST}..."
   log ""
 
@@ -776,7 +719,7 @@ fi
 
 # Step number depends on whether worker orchestration was used
 if [ -n "${WORKER_HOST}" ]; then
-  VLLM_STEP=12
+  VLLM_STEP=11
 else
   VLLM_STEP=8
 fi
@@ -841,7 +784,7 @@ log ""
 
 # Wait for vLLM to become ready with detailed progress feedback
 VLLM_READY=false
-MAX_WAIT=1800  # 30 minutes max for very large models (70B+ need more time)
+MAX_WAIT=1800  # 30 minutes max for very large models (70B+ can take 15-20+ min)
 LAST_STATUS=""
 START_TIME=$(date +%s)
 

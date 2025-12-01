@@ -10,10 +10,8 @@ set -euo pipefail
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Configuration
-# Uses custom image built with eugr's approach for DGX Spark (CUDA 13 + Blackwell SM 12.1a)
-# See: https://github.com/eugr/spark-vllm-docker
-IMAGE="${IMAGE:-spark-vllm:latest}"
-RAY_VERSION="${RAY_VERSION:-2.52.0}"
+IMAGE="${IMAGE:-nvcr.io/nvidia/vllm:25.11-py3}"
+RAY_VERSION="${RAY_VERSION:-2.52.1}"
 HF_CACHE="${HF_CACHE:-/raid/hf-cache}"
 HF_TOKEN="${HF_TOKEN:-}"  # Set via: export HF_TOKEN=hf_xxx
 
@@ -192,29 +190,9 @@ log "  ✅ Head is reachable"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 2/8: Checking Docker image"
-# Check if image exists locally first (custom images like spark-vllm:latest won't need pulling)
-if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-  log "  ✅ Using local image: ${IMAGE}"
-else
-  # Check if we need to load from a tar file (transferred via IB)
-  if [ -f "/tmp/spark-vllm.tar" ]; then
-    log "  Loading image from /tmp/spark-vllm.tar..."
-    docker load -i /tmp/spark-vllm.tar
-  elif [[ "${IMAGE}" == spark-vllm:* ]]; then
-    # For spark-vllm images, the head should have transferred the image via IB
-    # If not available, we cannot build here (no Dockerfile on worker)
-    log "  ❌ Image ${IMAGE} not found on worker node."
-    log ""
-    log "  The spark-vllm image should be transferred from the head node."
-    log "  Make sure to run start_cluster.sh on the head node first."
-    error "Image not available - run start_cluster.sh on head node"
-  else
-    log "  Image not found locally, pulling from registry..."
-    if ! docker pull "${IMAGE}"; then
-      error "Failed to pull image ${IMAGE}"
-    fi
-  fi
+log "Step 2/8: Pulling Docker image"
+if ! docker pull "${IMAGE}"; then
+  error "Failed to pull image ${IMAGE}"
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -278,7 +256,8 @@ log "  Container started successfully"
 
 log "Step 5/8: Verifying RDMA/InfiniBand libraries for NCCL"
 log "  These libraries are required for NCCL to use InfiniBand/RoCE instead of Ethernet"
-# The spark-vllm container already has RDMA libraries installed - just verify
+# NVIDIA vLLM container already includes RDMA libraries (libibverbs, librdmacm, ibverbs-providers)
+# We just verify they're present rather than installing
 if docker exec "${WORKER_NAME}" bash -lc "ldconfig -p 2>/dev/null | grep -q libibverbs"; then
   log "  ✅ RDMA libraries available (libibverbs, librdmacm)"
 else
@@ -288,23 +267,18 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 6/8: Verifying container has required dependencies"
-# The spark-vllm container already has Ray, vLLM, and fastsafetensors properly built for CUDA 13
-# Do NOT pip install anything here as it would overwrite the custom builds
+log "Step 6/8: Installing Ray ${RAY_VERSION}"
+if ! docker exec "${WORKER_NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}'"; then
+  error "Failed to install Ray"
+fi
 
-# Verify Ray is available
+# Verify Ray version
 INSTALLED_RAY_VERSION=$(docker exec "${WORKER_NAME}" python3 -c "import ray; print(ray.__version__)" 2>/dev/null || echo "unknown")
-if [ "${INSTALLED_RAY_VERSION}" == "unknown" ]; then
-  error "Ray not found in container - ensure you're using the correct spark-vllm image"
+if [ "${INSTALLED_RAY_VERSION}" != "${RAY_VERSION}" ]; then
+  error "Ray version mismatch: expected ${RAY_VERSION}, got ${INSTALLED_RAY_VERSION}"
 fi
-log "  Ray ${INSTALLED_RAY_VERSION} available"
 
-# Verify CUDA is working
-CUDA_AVAILABLE=$(docker exec "${WORKER_NAME}" python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "False")
-if [ "${CUDA_AVAILABLE}" != "True" ]; then
-  error "PyTorch CUDA not available - container may have incorrect PyTorch build"
-fi
-log "  PyTorch CUDA available"
+log "  Ray ${INSTALLED_RAY_VERSION} installed"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
