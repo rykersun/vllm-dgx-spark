@@ -555,6 +555,9 @@ if [ -f "${START_SCRIPT}" ]; then
   # Update GPU_MEMORY_UTIL
   sed -i "s|^GPU_MEMORY_UTIL=.*|GPU_MEMORY_UTIL=\"\${GPU_MEMORY_UTIL:-${NEW_GPU_MEM}}\"|" "${START_SCRIPT}"
 
+  # Update ENABLE_EXPERT_PARALLEL (for MoE models)
+  sed -i "s|^ENABLE_EXPERT_PARALLEL=.*|ENABLE_EXPERT_PARALLEL=\"\${ENABLE_EXPERT_PARALLEL:-${NEW_EXPERT_PARALLEL}}\"|" "${START_SCRIPT}"
+
   log "  Configuration updated in ${START_SCRIPT}"
 else
   log "  WARNING: ${START_SCRIPT} not found"
@@ -605,6 +608,7 @@ export MODEL="${NEW_MODEL}"
 export TENSOR_PARALLEL="${NEW_TP}"
 export MAX_MODEL_LEN="${NEW_MAX_LEN}"
 export GPU_MEMORY_UTIL="${NEW_GPU_MEM}"
+export ENABLE_EXPERT_PARALLEL="${NEW_EXPERT_PARALLEL}"
 export SKIP_MODEL_DOWNLOAD=1  # We already downloaded
 
 if [ "${NEW_NODES}" -gt 1 ]; then

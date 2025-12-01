@@ -25,8 +25,11 @@ HF_TOKEN="${HF_TOKEN:-}"
 RAY_VERSION="${RAY_VERSION:-2.52.1}"
 
 # Worker node configuration (for orchestrated setup)
-# WORKER_IPS (or legacy WORKER_HOST) must be set to enable automatic worker setup
-WORKER_HOST="${WORKER_IPS:-${WORKER_HOST:-}}"  # Support both new and legacy names
+# WORKER_HOST: Ethernet IP for SSH access (e.g., 192.168.7.111)
+# WORKER_IB_IP: InfiniBand IP for NCCL communication (e.g., 169.254.216.8)
+# Legacy WORKER_IPS is supported for backwards compatibility
+WORKER_HOST="${WORKER_HOST:-}"
+WORKER_IB_IP="${WORKER_IB_IP:-${WORKER_IPS:-}}"  # Fallback to WORKER_IPS for backwards compat
 WORKER_USER="${WORKER_USER:-$(whoami)}"
 WORKER_HF_CACHE="${WORKER_HF_CACHE:-${HF_CACHE}}"
 
@@ -37,7 +40,17 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"
 SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
-ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-true}"
+
+# Auto-detect MoE models for expert parallelism
+# Known MoE models: gpt-oss, mixtral, deepseek-moe, qwen-moe
+if [ -z "${ENABLE_EXPERT_PARALLEL:-}" ]; then
+  if echo "${MODEL}" | grep -qiE "(gpt-oss|mixtral|deepseek.*moe|qwen.*moe)"; then
+    ENABLE_EXPERT_PARALLEL="true"
+  else
+    ENABLE_EXPERT_PARALLEL="false"
+  fi
+fi
+
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
 # Model loading format (safetensors is recommended)
 LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
@@ -172,19 +185,29 @@ echo ""
 
 PREFLIGHT_FAILED=false
 
-# Check 1: WORKER_HOST must be set for distributed setup
-echo "Checking WORKER_HOST..."
+# Check 1: Worker configuration for distributed setup
+echo "Checking worker configuration..."
+# If WORKER_HOST not set but WORKER_IB_IP is, fall back for backwards compat
+if [ -z "${WORKER_HOST}" ] && [ -n "${WORKER_IB_IP}" ]; then
+  echo "  ⚠️  WORKER_HOST not set, using WORKER_IB_IP (${WORKER_IB_IP}) for SSH"
+  WORKER_HOST="${WORKER_IB_IP}"
+fi
+
 if [ -z "${WORKER_HOST}" ]; then
   echo "  ❌ WORKER_HOST is not set"
   echo ""
-  echo "  For distributed inference, you must set WORKER_HOST to the worker's"
-  echo "  Ethernet IP address (for SSH access)."
+  echo "  For distributed inference, set these environment variables:"
+  echo "    export WORKER_HOST=\"192.168.x.x\"    # Ethernet IP for SSH"
+  echo "    export WORKER_IB_IP=\"169.254.x.x\"   # InfiniBand IP for NCCL"
   echo ""
-  echo "  Run: source ./setup-env.sh --head"
+  echo "  Or run: source ./setup-env.sh --head"
   echo ""
   PREFLIGHT_FAILED=true
 else
-  echo "  ✅ WORKER_HOST=${WORKER_HOST}"
+  echo "  ✅ WORKER_HOST=${WORKER_HOST} (SSH)"
+  if [ -n "${WORKER_IB_IP}" ]; then
+    echo "  ✅ WORKER_IB_IP=${WORKER_IB_IP} (NCCL)"
+  fi
 fi
 
 # Check 2: SSH connectivity to worker
@@ -347,14 +370,18 @@ log "  Ray Version:     ${RAY_VERSION}"
 log ""
 if [ -n "${WORKER_HOST}" ]; then
   log "Worker Node Configuration (orchestrated setup enabled):"
-  log "  Worker Host:     ${WORKER_HOST}"
+  log "  Worker Host:     ${WORKER_HOST} (SSH)"
+  if [ -n "${WORKER_IB_IP}" ]; then
+    log "  Worker IB IP:    ${WORKER_IB_IP} (NCCL)"
+  fi
   log "  Worker User:     ${WORKER_USER}"
   log "  Worker HF Cache: ${WORKER_HF_CACHE}"
   log ""
 else
   log "Worker Node Configuration:"
   log "  ⚠️  WORKER_HOST not set - manual worker setup required"
-  log "     Set WORKER_HOST=<ip> to enable automatic worker orchestration"
+  log "     export WORKER_HOST=<ethernet_ip>  # For SSH"
+  log "     export WORKER_IB_IP=<ib_ip>       # For NCCL"
   log ""
 fi
 log "Network Configuration (auto-detected from ibdev2netdev):"
@@ -693,7 +720,8 @@ else
   log "Step 8/${TOTAL_STEPS}: Waiting for worker nodes"
   log ""
   log "  ⚠️  IMPORTANT: Set WORKER_HOST to start workers automatically:"
-  log "     export WORKER_HOST=<worker_ib_ip>"
+  log "     export WORKER_HOST=<worker_ethernet_ip>  # For SSH"
+  log "     export WORKER_IB_IP=<worker_ib_ip>       # For NCCL"
   log "     bash start_cluster.sh"
   log ""
   log "  Checking Ray cluster status..."
@@ -926,8 +954,9 @@ if [ -n "${WORKER_HOST}" ]; then
   echo ""
 else
   echo "🔗 Next Steps - Start Workers Automatically:"
-  echo "  Set WORKER_HOST and re-run start_cluster.sh:"
-  echo "    export WORKER_HOST=<worker_ib_ip>"
+  echo "  Set worker IPs and re-run start_cluster.sh:"
+  echo "    export WORKER_HOST=<worker_ethernet_ip>  # For SSH"
+  echo "    export WORKER_IB_IP=<worker_ib_ip>       # For NCCL"
   echo "    bash start_cluster.sh"
   echo ""
   echo "  Workers will be started automatically via SSH."
