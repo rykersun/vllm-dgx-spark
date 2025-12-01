@@ -19,7 +19,8 @@ fi
 
 HEAD_CONTAINER_NAME="${HEAD_CONTAINER_NAME:-ray-head}"
 WORKER_CONTAINER_NAME="${WORKER_CONTAINER_NAME:-ray-worker}"
-WORKER_IPS="${WORKER_IPS:-${WORKER_HOST:-}}"
+# Support both new (WORKER_HOST) and legacy (WORKER_IPS) variable names
+WORKER_HOST="${WORKER_HOST:-${WORKER_IPS:-}}"
 WORKER_USER="${WORKER_USER:-$(whoami)}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -49,27 +50,40 @@ stop_remote_containers() {
 
   log "  Stopping containers on ${host}..."
 
-  # Stop ray-worker container
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "${user}@${host}" "
-    if docker ps -a --format '{{.Names}}' | grep -q '${WORKER_CONTAINER_NAME}'; then
-      docker stop ${WORKER_CONTAINER_NAME} >/dev/null 2>&1 || true
-      docker rm -f ${WORKER_CONTAINER_NAME} >/dev/null 2>&1 || true
-      echo '  ${WORKER_CONTAINER_NAME} stopped'
-    else
-      echo '  No ${WORKER_CONTAINER_NAME} container found'
-    fi
-  " 2>/dev/null || log "  Warning: Could not connect to ${host}"
+  if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${user}@${host}" "echo ok" >/dev/null 2>&1; then
+    log "  Warning: Cannot SSH to ${user}@${host}, skipping"
+    return 1
+  fi
+
+  ssh "${user}@${host}" bash -s << 'REMOTE_EOF'
+# Stop all ray-* containers on remote node
+CONTAINERS=$(docker ps -a --format '{{.Names}}' | grep -E "^ray-" || true)
+if [ -n "${CONTAINERS}" ]; then
+  for c in ${CONTAINERS}; do
+    docker stop "${c}" >/dev/null 2>&1 || true
+    docker rm -f "${c}" >/dev/null 2>&1 || true
+    echo "    Stopped ${c}"
+  done
+else
+  echo "    No vLLM/Ray containers found"
+fi
+REMOTE_EOF
 }
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Parse Arguments
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+FORCE=false
 LOCAL_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --local-only)
+    -f|--force)
+      FORCE=true
+      shift
+      ;;
+    -l|--local-only)
       LOCAL_ONLY=true
       shift
       ;;
@@ -77,8 +91,14 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --local-only    Only stop local containers (skip workers)"
-      echo "  -h, --help      Show this help"
+      echo "  -f, --force       Stop without confirmation"
+      echo "  -l, --local-only  Only stop containers on this node (don't SSH to workers)"
+      echo "  -h, --help        Show this help"
+      echo ""
+      echo "By default, this script will:"
+      echo "  1. Stop containers on the head node (local)"
+      echo "  2. SSH to all workers in WORKER_HOST and stop their containers"
+      echo ""
       exit 0
       ;;
     *)
@@ -89,55 +109,102 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Main
+# Main Script
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " Stopping vLLM Cluster"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "============================================================="
+echo " vLLM Cluster Shutdown"
+echo "============================================================="
 echo ""
 
-STOPPED_ANY=false
+# Convert WORKER_HOST to array (for SSH access to workers)
+read -ra WORKER_HOST_ARRAY <<< "${WORKER_HOST}"
 
-# Stop worker containers first (if not local-only)
-if [ "${LOCAL_ONLY}" != "true" ] && [ -n "${WORKER_IPS}" ]; then
-  log "Stopping worker containers..."
-
-  for WORKER_IP in ${WORKER_IPS}; do
-    stop_remote_containers "${WORKER_IP}" "${WORKER_USER}"
-    STOPPED_ANY=true
+# Show what will be stopped
+log "Will stop vLLM/Ray on:"
+echo "  - Head node (local)"
+if [ "${LOCAL_ONLY}" != "true" ] && [ ${#WORKER_HOST_ARRAY[@]} -gt 0 ]; then
+  for ip in "${WORKER_HOST_ARRAY[@]}"; do
+    echo "  - Worker: ${ip}"
   done
-else
-  if [ "${LOCAL_ONLY}" = "true" ]; then
-    log "Skipping workers (--local-only)"
-  else
-    log "No worker IPs configured"
-  fi
 fi
+echo ""
+
+# Find local containers
+LOCAL_CONTAINERS=$(docker ps --format '{{.Names}}' | grep -E "^ray-" || true)
+
+if [ -z "${LOCAL_CONTAINERS}" ]; then
+  log "No vLLM/Ray containers on head node."
+else
+  log "Local containers:"
+  for c in ${LOCAL_CONTAINERS}; do
+    echo "  - ${c}"
+  done
+fi
+echo ""
+
+# Confirmation
+if [ "${FORCE}" != "true" ]; then
+  read -p "Proceed with shutdown? [y/N] " -n 1 -r
+  echo ""
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    log "Cancelled."
+    exit 0
+  fi
+  echo ""
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stop workers first (if configured)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ "${LOCAL_ONLY}" != "true" ] && [ ${#WORKER_HOST_ARRAY[@]} -gt 0 ]; then
+  log "Stopping workers..."
+  for ip in "${WORKER_HOST_ARRAY[@]}"; do
+    stop_remote_containers "${ip}" "${WORKER_USER}" || true
+  done
+  echo ""
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stop head node containers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+log "Stopping head node..."
+STOPPED=0
 
 # Stop head container
-log "Stopping head container..."
 if stop_local_container "${HEAD_CONTAINER_NAME}"; then
-  STOPPED_ANY=true
-else
-  log "  No ${HEAD_CONTAINER_NAME} container found"
+  STOPPED=$((STOPPED + 1))
 fi
 
-# Also check for any other ray containers
-for container in $(docker ps -a --format '{{.Names}}' | grep -E '^ray-' 2>/dev/null || true); do
-  if [ "${container}" != "${HEAD_CONTAINER_NAME}" ]; then
-    log "  Found additional container: ${container}"
-    stop_local_container "${container}" && STOPPED_ANY=true
+# Stop any local worker containers (shouldn't exist on head, but just in case)
+for c in $(docker ps --format '{{.Names}}' | grep -E "^${WORKER_CONTAINER_NAME}" || true); do
+  if stop_local_container "${c}"; then
+    STOPPED=$((STOPPED + 1))
   fi
 done
 
+# Stop any other ray-* containers
+for c in $(docker ps --format '{{.Names}}' | grep -E "^ray-" || true); do
+  if stop_local_container "${c}"; then
+    STOPPED=$((STOPPED + 1))
+  fi
+done
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Summary
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if [ "${STOPPED_ANY}" = "true" ]; then
-  echo " Cluster stopped"
-else
-  echo " No containers were running"
+echo "============================================================="
+log "Cluster shutdown complete"
+echo ""
+echo "Stopped:"
+echo "  - ${STOPPED} container(s) on head node"
+if [ "${LOCAL_ONLY}" != "true" ] && [ ${#WORKER_HOST_ARRAY[@]} -gt 0 ]; then
+  echo "  - Containers on ${#WORKER_HOST_ARRAY[@]} worker node(s)"
 fi
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+echo "============================================================="
