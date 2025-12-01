@@ -39,9 +39,10 @@ SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
 ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-true}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
-# fastsafetensors uses GPU Direct Storage for faster model loading
-# Requires --cap-add=SYS_NICE (added to docker run command)
-LOAD_FORMAT="${LOAD_FORMAT:-fastsafetensors}"
+# Model loading format: safetensors (default) or fastsafetensors
+# Note: fastsafetensors requires GPU Direct Storage (GDS) support
+# which may not be available on all systems
+LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # Ports
