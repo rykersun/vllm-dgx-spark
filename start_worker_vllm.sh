@@ -294,7 +294,8 @@ log "  ✅ Ray ${INSTALLED_RAY_VERSION} available"
 # Install only fastsafetensors if not already present (does not affect vLLM/PyTorch)
 if ! docker exec "${WORKER_NAME}" python3 -c "import fastsafetensors" 2>/dev/null; then
   log "  Installing fastsafetensors..."
-  docker exec "${WORKER_NAME}" bash -lc "pip install -q --root-user-action=ignore fastsafetensors" || true
+  # Unset PIP_CONSTRAINT to avoid deprecation warning from nvidia container
+  docker exec "${WORKER_NAME}" bash -lc "unset PIP_CONSTRAINT && pip install -q --root-user-action=ignore fastsafetensors" || true
 fi
 log "  fastsafetensors available"
 
