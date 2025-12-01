@@ -39,7 +39,9 @@ SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
 ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-true}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
-LOAD_FORMAT="${LOAD_FORMAT:-fastsafetensors}"
+# Note: fastsafetensors requires --cap-add=SYS_NICE for get_mempolicy syscall
+# Default to safetensors which works without special permissions
+LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # Ports
