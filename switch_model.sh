@@ -620,7 +620,7 @@ STARTUP_PID=$!
 echo ""
 log "Waiting for API to become ready..."
 
-MAX_WAIT=600
+MAX_WAIT=1800  # 30 minutes for large models (70B+ need more time)
 ELAPSED=0
 API_URL="http://127.0.0.1:8000"
 

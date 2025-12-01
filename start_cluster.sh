@@ -31,7 +31,7 @@ WORKER_USER="${WORKER_USER:-$(whoami)}"
 WORKER_HF_CACHE="${WORKER_HF_CACHE:-${HF_CACHE}}"
 
 # Model configuration
-MODEL="${MODEL:-openai/gpt-oss-120b}"
+MODEL="${MODEL:-openai/gpt-oss-20b}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"
@@ -841,7 +841,7 @@ log ""
 
 # Wait for vLLM to become ready with detailed progress feedback
 VLLM_READY=false
-MAX_WAIT=600  # 10 minutes max for very large models
+MAX_WAIT=1800  # 30 minutes max for very large models (70B+ need more time)
 LAST_STATUS=""
 START_TIME=$(date +%s)
 
