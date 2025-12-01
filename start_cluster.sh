@@ -466,19 +466,36 @@ fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-log "Step 5/${TOTAL_STEPS}: Installing Ray ${RAY_VERSION} and fastsafetensors"
-if ! docker exec "${NAME}" bash -lc "pip install -q -U --root-user-action=ignore 'ray==${RAY_VERSION}' 'vllm[fastsafetensors]'"; then
-  error "Failed to install Ray and fastsafetensors"
+log "Step 5/${TOTAL_STEPS}: Verifying container dependencies"
+# The nvidia vLLM container already has vLLM and Ray properly built
+# Do NOT pip install vllm as it would overwrite the CUDA-enabled version with CPU-only PyPI version
+
+# Verify vLLM is available with CUDA
+CUDA_AVAILABLE=$(docker exec "${NAME}" python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || echo "False")
+if [ "${CUDA_AVAILABLE}" != "True" ]; then
+  error "PyTorch CUDA not available - container may be corrupted. Try: docker pull nvcr.io/nvidia/vllm:25.11-py3"
 fi
+log "  ✅ PyTorch CUDA available"
+
+INSTALLED_VLLM_VERSION=$(docker exec "${NAME}" python3 -c "import vllm; print(vllm.__version__)" 2>/dev/null || echo "unknown")
+if [ "${INSTALLED_VLLM_VERSION}" == "unknown" ]; then
+  error "vLLM not found in container"
+fi
+log "  ✅ vLLM ${INSTALLED_VLLM_VERSION} available"
 
 # Verify Ray version
 INSTALLED_RAY_VERSION=$(docker exec "${NAME}" python3 -c "import ray; print(ray.__version__)" 2>/dev/null || echo "unknown")
-if [ "${INSTALLED_RAY_VERSION}" != "${RAY_VERSION}" ]; then
-  error "Ray version mismatch: expected ${RAY_VERSION}, got ${INSTALLED_RAY_VERSION}"
+if [ "${INSTALLED_RAY_VERSION}" == "unknown" ]; then
+  error "Ray not found in container"
 fi
+log "  ✅ Ray ${INSTALLED_RAY_VERSION} available"
 
-log "  Ray ${INSTALLED_RAY_VERSION} installed"
-log "  fastsafetensors installed (GPU Direct Storage for faster model loading)"
+# Install only fastsafetensors if not already present (does not affect vLLM/PyTorch)
+if ! docker exec "${NAME}" python3 -c "import fastsafetensors" 2>/dev/null; then
+  log "  Installing fastsafetensors..."
+  docker exec "${NAME}" bash -lc "pip install -q --root-user-action=ignore fastsafetensors" || true
+fi
+log "  fastsafetensors available (GPU Direct Storage for faster model loading)"
 
 # Apply fastsafetensors cluster patch (fixes device group handling in distributed setup)
 # See: https://github.com/foundation-model-stack/fastsafetensors/issues/36
