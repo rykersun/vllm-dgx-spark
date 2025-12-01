@@ -39,10 +39,10 @@ SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
 ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-true}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
-# Model loading format: safetensors (default) or fastsafetensors
-# Note: fastsafetensors requires GPU Direct Storage (GDS) support
-# which may not be available on all systems
-LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
+# Model loading format: fastsafetensors (default) or safetensors
+# fastsafetensors uses POSIX fallback mode via CUFILE_FORCE_COMPAT_MODE=1
+# (GDS/cuFile not required with this setting)
+LOAD_FORMAT="${LOAD_FORMAT:-fastsafetensors}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # Ports
@@ -426,6 +426,9 @@ ENV_ARGS=(
   -e RAY_GCS_SERVER_PORT=6380
   # HuggingFace cache
   -e HF_HOME=/root/.cache/huggingface
+  # fastsafetensors: use POSIX fallback mode instead of GDS (cuFile)
+  # GDS requires special driver/filesystem support not available everywhere
+  -e CUFILE_FORCE_COMPAT_MODE=1
 )
 
 # Add HuggingFace token if provided

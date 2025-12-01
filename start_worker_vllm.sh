@@ -244,6 +244,7 @@ docker run -d \
   -e NVIDIA_DRIVER_CAPABILITIES=all \
   -e RAY_memory_usage_threshold=0.995 \
   -e HF_HOME=/root/.cache/huggingface \
+  -e CUFILE_FORCE_COMPAT_MODE=1 \
   ${HF_TOKEN_ENV} \
   "${IMAGE}" sleep infinity
 
