@@ -39,10 +39,10 @@ SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
 ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-true}"
 TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-false}"
-# Model loading format: fastsafetensors (default) or safetensors
-# fastsafetensors uses POSIX fallback mode via CUFILE_FORCE_COMPAT_MODE=1
-# (GDS/cuFile not required with this setting)
-LOAD_FORMAT="${LOAD_FORMAT:-fastsafetensors}"
+# Model loading format: safetensors (default) or fastsafetensors
+# fastsafetensors has a bug with multi-node setups (invalid device ordinal)
+# See: https://github.com/foundation-model-stack/fastsafetensors/issues/36
+LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # Ports
@@ -426,9 +426,9 @@ ENV_ARGS=(
   -e RAY_GCS_SERVER_PORT=6380
   # HuggingFace cache
   -e HF_HOME=/root/.cache/huggingface
-  # fastsafetensors: use POSIX fallback mode instead of GDS (cuFile)
-  # GDS requires special driver/filesystem support not available everywhere
-  -e CUFILE_FORCE_COMPAT_MODE=1
+  # FST_USE_GDS controls fastsafetensors GDS mode (0=POSIX fallback, 1=GDS)
+  # Default is 0 (POSIX) since GDS requires special driver/filesystem support
+  -e FST_USE_GDS=0
 )
 
 # Add HuggingFace token if provided

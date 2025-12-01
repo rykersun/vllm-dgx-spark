@@ -9,7 +9,7 @@ diff --git a/vllm/model_executor/model_loader/weight_utils.py b/vllm/model_execu
  from vllm.logger import init_logger
  from vllm.model_executor.layers.quantization import (QuantizationConfig,
                                                       get_quantization_config)
-@@ -647,11 +648,13 @@ def fastsafetensors_weights_iterator(
+@@ -647,11 +648,16 @@ def fastsafetensors_weights_iterator(
      """Iterate over the weights in the model safetensor files
      using fastsafetensor library."""
      if torch.distributed.is_initialized():
@@ -22,6 +22,18 @@ diff --git a/vllm/model_executor/model_loader/weight_utils.py b/vllm/model_execu
 +        device = torch.device(f'cuda:{pg.rank()}')
 
 -    device = torch.device(f'cuda:{pg.rank()}')
++    # Disable GDS by default (use POSIX) unless FST_USE_GDS=1 is set
++    # GDS requires special driver/filesystem support not available everywhere
++    use_gds = os.environ.get('FST_USE_GDS', '0') == '1'
      weight_files_sub_lists = [
          hf_weights_files[i:i + pg.size()]
          for i in range(0, len(hf_weights_files), pg.size())
+@@ -665,7 +671,7 @@ def fastsafetensors_weights_iterator(
+             disable=not enable_tqdm(use_tqdm_on_load),
+             bar_format=_BAR_FORMAT,
+     ):
+-        loader = SafeTensorsFileLoader(pg, device)
++        loader = SafeTensorsFileLoader(pg, device, nogds=not use_gds)
+         rank_file_map = {i: [f] for i, f in enumerate(f_list)}
+         loader.add_filenames(rank_file_map)
+         try:
