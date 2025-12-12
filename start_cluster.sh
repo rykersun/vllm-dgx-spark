@@ -34,9 +34,9 @@ WORKER_USER="${WORKER_USER:-$(whoami)}"
 WORKER_HF_CACHE="${WORKER_HF_CACHE:-${HF_CACHE}}"
 
 # Model configuration
-MODEL="${MODEL:-openai/gpt-oss-120b}"
+MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.90}"
 SWAP_SPACE="${SWAP_SPACE:-16}"
 SHM_SIZE="${SHM_SIZE:-16g}"
@@ -194,20 +194,22 @@ if [ -z "${WORKER_HOST}" ] && [ -n "${WORKER_IB_IP}" ]; then
 fi
 
 if [ -z "${WORKER_HOST}" ]; then
-  echo "  ❌ WORKER_HOST is not set"
+  echo "  ℹ️  WORKER_HOST is not set - running in SINGLE-NODE mode"
   echo ""
-  echo "  For distributed inference, set these environment variables:"
+  echo "  Single-node mode uses only this machine's GPU(s)."
+  echo "  Ensure TENSOR_PARALLEL=${TENSOR_PARALLEL} matches available GPUs."
+  echo ""
+  echo "  For multi-node distributed inference, set:"
   echo "    export WORKER_HOST=\"192.168.x.x\"    # Ethernet IP for SSH"
   echo "    export WORKER_IB_IP=\"169.254.x.x\"   # InfiniBand IP for NCCL"
   echo ""
-  echo "  Or run: source ./setup-env.sh --head"
-  echo ""
-  PREFLIGHT_FAILED=true
+  SINGLE_NODE_MODE=true
 else
   echo "  ✅ WORKER_HOST=${WORKER_HOST} (SSH)"
   if [ -n "${WORKER_IB_IP}" ]; then
     echo "  ✅ WORKER_IB_IP=${WORKER_IB_IP} (NCCL)"
   fi
+  SINGLE_NODE_MODE=false
 fi
 
 # Check 2: SSH connectivity to worker
@@ -449,6 +451,8 @@ ENV_ARGS=(
   # Ray settings
   -e RAY_memory_usage_threshold=0.998
   -e RAY_GCS_SERVER_PORT=6380
+  # vLLM timeout settings (large models like 70B+ can take 20+ minutes to load)
+  -e VLLM_RPC_TIMEOUT="${VLLM_RPC_TIMEOUT:-1800}"
   # HuggingFace cache
   -e HF_HOME=/root/.cache/huggingface
 )
@@ -934,6 +938,8 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 if [ -n "${WORKER_HOST}" ]; then
   echo "✅ Cluster is ready! (Head + Worker orchestrated)"
+elif [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  echo "✅ Single-node vLLM server is ready!"
 else
   echo "✅ Head node is ready!"
 fi
@@ -951,6 +957,16 @@ if [ -n "${WORKER_HOST}" ]; then
   echo ""
   echo "🔧 Worker Logs:"
   echo "  ssh ${WORKER_USER}@${WORKER_HOST} 'cat ~/worker_setup.log'"
+  echo ""
+elif [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  echo "🖥️  Single-Node Configuration:"
+  echo "  Host: $(hostname)"
+  echo "  GPUs: ${TENSOR_PARALLEL} (tensor parallelism)"
+  echo ""
+  echo "🔗 To Add Worker Nodes Later:"
+  echo "    export WORKER_HOST=<worker_ethernet_ip>  # For SSH"
+  echo "    export WORKER_IB_IP=<worker_ib_ip>       # For NCCL"
+  echo "    bash start_cluster.sh"
   echo ""
 else
   echo "🔗 Next Steps - Start Workers Automatically:"

@@ -1,19 +1,41 @@
 # vLLM on DGX Spark Cluster
 
-Deploy [vLLM](https://github.com/vllm-project/vllm) on a dual-node NVIDIA DGX Spark cluster with InfiniBand RDMA for serving large language models.
+Deploy [vLLM](https://github.com/vllm-project/vllm) on NVIDIA DGX Spark systems - supports both single-node and dual-node cluster configurations with InfiniBand RDMA for serving large language models.
 
 > **DISCLAIMER**: This project is NOT affiliated with, endorsed by, or officially supported by NVIDIA, vLLM, or any other organization. This is a community-driven effort to run vLLM on DGX Spark hardware. Use at your own risk. The software is provided "AS IS", without warranty of any kind.
 
 ## Features
 
+- **Single-node and multi-node support** - Run on one DGX Spark or scale to two
 - **Single-command deployment** - Start entire cluster from head node via SSH
 - **Auto-detection** of InfiniBand IPs, network interfaces, and HCA devices
-- **Generic scripts** that work on any DGX Spark pair
+- **Generic scripts** that work on any DGX Spark configuration
 - **13 model presets** including Llama, Qwen, Mixtral, Gemma
 - **InfiniBand RDMA** for high-speed inter-node communication (200Gb/s)
 - **Comprehensive benchmarking** with multiple test profiles
 
 ## Cluster Architecture
+
+### Single-Node Mode (1x DGX Spark)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DGX Spark Single Node                        │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                      SINGLE NODE                          │  │
+│  │                                                           │  │
+│  │  GPU: 1x GB10 (Blackwell, sm100) ~120GB VRAM             │  │
+│  │  /raid/hf-cache                                          │  │
+│  │  Port: 8000 (API)                                        │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  Tensor Parallel (TP=1): Full model on single GPU              │
+│  Best for: Models up to ~80GB (Llama 70B, Qwen 72B, etc.)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Dual-Node Mode (2x DGX Spark)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -31,20 +53,28 @@ Deploy [vLLM](https://github.com/vllm-project/vllm) on a dual-node NVIDIA DGX Sp
 │  └──────────────────────┘      └──────────────────────┘        │
 │                                                                 │
 │  Tensor Parallel (TP=2): Model split across both GPUs          │
+│  Best for: Large models (GPT-OSS 120B, etc.)                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Hardware Requirements
 
+### Single-Node
+- **Nodes:** 1x DGX Spark system
+- **GPUs:** 1x NVIDIA GB10 (Grace Blackwell, sm100), ~120GB VRAM
+- **Storage:** Model cache at `/raid/hf-cache` (or configure in `config.env`)
+
+### Dual-Node (for larger models)
 - **Nodes:** 2x DGX Spark systems
-- **GPUs:** 1x NVIDIA GB10 (Grace Blackwell, sm100) per node, ~120GB VRAM each
+- **GPUs:** 1x NVIDIA GB10 per node, ~120GB VRAM each
 - **Network:** 200Gb/s InfiniBand RoCE between nodes
-- **Storage:** Shared model cache at `/raid/hf-cache` (or configure in `config.env`)
-- **SSH:** Passwordless SSH from head to worker node(s)
+- **Storage:** Model cache at `/raid/hf-cache` on both nodes
+- **SSH:** Passwordless SSH from head to worker node
 
 ## Prerequisites
 
-Complete these steps on **BOTH** servers before running `start_cluster.sh`:
+Complete these steps on your server(s) before running `start_cluster.sh`.
+For single-node setups, only the head node needs to be configured.
 
 ### 1. NVIDIA GPU Drivers
 
@@ -63,7 +93,9 @@ docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu20.04 nvidia-smi
 ```
 If this fails, install/configure the NVIDIA Container Toolkit.
 
-### 3. InfiniBand Network Configuration
+### 3. InfiniBand Network Configuration (Dual-Node Only)
+
+**Note:** Skip this section for single-node setups.
 
 **CRITICAL:** InfiniBand (QSFP) interfaces must be configured and operational for multi-node performance.
 
@@ -122,9 +154,30 @@ git clone <this-repo>
 cd vllm-dgx-spark
 ```
 
-### 2. Setup SSH (one-time)
+### 2. Choose Your Configuration
 
-Ensure passwordless SSH from head to worker:
+#### Option A: Single-Node (Simplest)
+
+For running on a single DGX Spark with one GPU:
+
+```bash
+# Set tensor parallelism to 1 (single GPU)
+export TENSOR_PARALLEL=1
+
+# Choose a model that fits in ~120GB VRAM
+export MODEL="meta-llama/Llama-3.1-70B-Instruct"  # or any model up to ~80GB
+
+# Start the server
+./start_cluster.sh
+```
+
+That's it! No SSH setup or worker configuration needed.
+
+#### Option B: Dual-Node Cluster (For Larger Models)
+
+For running across two DGX Spark systems:
+
+**Setup SSH (one-time):**
 ```bash
 # On head node, generate key if needed:
 ssh-keygen -t ed25519  # Press enter for defaults
@@ -136,34 +189,31 @@ ssh-copy-id <username>@<worker-ib-ip>
 ssh <username>@<worker-ib-ip> "hostname"
 ```
 
-### 3. Configure Environment
+**Configure Environment:**
 
-**Option A: Interactive setup (recommended)**
 ```bash
+# Option 1: Interactive setup (recommended)
 source ./setup-env.sh
-```
 
-**Option B: Edit config file**
-```bash
+# Option 2: Edit config file
 cp config.env config.local.env
 vim config.local.env
 
 # Set at minimum:
-# WORKER_IPS="<worker-infiniband-ip>"
+# WORKER_HOST="<worker-ethernet-ip>"   # For SSH
+# WORKER_IB_IP="<worker-infiniband-ip>" # For NCCL
 # WORKER_USER="<ssh-username>"
 ```
 
-### 4. Start the Cluster
-
-From the **head node**, run:
+**Start the Cluster:**
 ```bash
 ./start_cluster.sh
 ```
 
-This single command will:
+This will:
 1. Pull the Docker image on both nodes
 2. Download the model (with rsync to worker)
-3. SSH to worker(s) and start Ray worker containers
+3. SSH to worker and start Ray worker container
 4. Start Ray head and vLLM server
 5. Wait for the cluster to become ready (~2-5 minutes)
 
@@ -220,16 +270,17 @@ Key settings in `config.env` or `config.local.env`:
 
 ```bash
 # ┌─────────────────────────────────────────────────────────────────┐
-# │ Required for Multi-Node                                         │
+# │ Multi-Node Settings (Optional - skip for single-node)          │
 # └─────────────────────────────────────────────────────────────────┘
-WORKER_IPS="<worker-ib-ip>"        # Worker InfiniBand IP(s), space-separated
+WORKER_HOST="<worker-ethernet-ip>" # Worker Ethernet IP for SSH (optional)
+WORKER_IB_IP="<worker-ib-ip>"      # Worker InfiniBand IP for NCCL (optional)
 WORKER_USER="<username>"           # SSH username for workers
 
 # ┌─────────────────────────────────────────────────────────────────┐
 # │ Model Settings                                                  │
 # └─────────────────────────────────────────────────────────────────┘
 MODEL="openai/gpt-oss-120b"        # Model to serve
-TENSOR_PARALLEL="2"                # Total GPUs (1 per node × 2 nodes)
+TENSOR_PARALLEL="2"                # GPUs: 1 for single-node, 2 for dual-node
 GPU_MEMORY_UTIL="0.90"             # GPU memory utilization for KV cache
 
 # ┌─────────────────────────────────────────────────────────────────┐
@@ -288,23 +339,26 @@ Use `switch_model.sh` to easily switch between models:
 
 ## Supported Models
 
-All models run across both DGX Spark nodes (TP=2) for maximum performance.
+Models can run on single-node (TP=1) or dual-node (TP=2) depending on size.
 
-| # | Model | Size | Notes |
-|---|-------|------|-------|
-| 1 | `openai/gpt-oss-120b` | ~80GB+ | Default, MoE, reasoning model |
-| 2 | `openai/gpt-oss-20b` | ~16-20GB | MoE, fast |
-| 3 | `Qwen/Qwen2.5-7B-Instruct` | ~7GB | Very fast |
-| 4 | `Qwen/Qwen2.5-14B-Instruct` | ~14GB | Fast |
-| 5 | `Qwen/Qwen2.5-32B-Instruct` | ~30GB | Strong mid-size |
-| 6 | `Qwen/Qwen2.5-72B-Instruct` | ~70GB | High quality |
-| 7 | `mistralai/Mistral-7B-Instruct-v0.3` | ~7GB | Very fast |
-| 8 | `mistralai/Mistral-Nemo-Instruct-2407` | ~12GB | 128k context |
-| 9 | `mistralai/Mixtral-8x7B-Instruct-v0.1` | ~45GB | MoE, fast |
-| 10 | `meta-llama/Llama-3.1-8B-Instruct` | ~8GB | Very fast (needs HF token) |
-| 11 | `meta-llama/Llama-3.1-70B-Instruct` | ~65GB | High quality (needs HF token) |
-| 12 | `microsoft/phi-4` | ~14-16GB | Small but smart |
-| 13 | `google/gemma-2-27b-it` | ~24-28GB | Strong mid-size (needs HF token) |
+| # | Model | Size | Single-Node | Notes |
+|---|-------|------|-------------|-------|
+| 1 | `openai/gpt-oss-120b` | ~80GB+ | No | Default, MoE, requires TP=2 |
+| 2 | `openai/gpt-oss-20b` | ~16-20GB | Yes | MoE, fast |
+| 3 | `Qwen/Qwen2.5-7B-Instruct` | ~7GB | Yes | Very fast |
+| 4 | `Qwen/Qwen2.5-14B-Instruct` | ~14GB | Yes | Fast |
+| 5 | `Qwen/Qwen2.5-32B-Instruct` | ~30GB | Yes | Strong mid-size |
+| 6 | `Qwen/Qwen2.5-72B-Instruct` | ~70GB | Yes | High quality |
+| 7 | `mistralai/Mistral-7B-Instruct-v0.3` | ~7GB | Yes | Very fast |
+| 8 | `mistralai/Mistral-Nemo-Instruct-2407` | ~12GB | Yes | 128k context |
+| 9 | `mistralai/Mixtral-8x7B-Instruct-v0.1` | ~45GB | Yes | MoE, fast |
+| 10 | `meta-llama/Llama-3.1-8B-Instruct` | ~8GB | Yes | Very fast (needs HF token) |
+| 11 | `meta-llama/Llama-3.1-70B-Instruct` | ~65GB | Yes | High quality (needs HF token) |
+| 12 | `microsoft/phi-4` | ~14-16GB | Yes | Small but smart |
+| 13 | `google/gemma-2-27b-it` | ~24-28GB | Yes | Strong mid-size (needs HF token) |
+
+**Single-Node:** Models up to ~80GB fit on one DGX Spark (~120GB VRAM)
+**Dual-Node:** Required for GPT-OSS 120B and other very large models
 
 ## Benchmark Profiles
 
