@@ -100,7 +100,7 @@ If this fails, install/configure the NVIDIA Container Toolkit.
 **CRITICAL:** InfiniBand (QSFP) interfaces must be configured and operational for multi-node performance.
 
 ```bash
-# Install InfiniBad Tools
+# Install InfiniBand Tools
 sudo apt install infiniband-diags
 
 # Check InfiniBand status
