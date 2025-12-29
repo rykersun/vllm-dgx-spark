@@ -62,12 +62,34 @@ RAY_DASHBOARD_PORT="${RAY_DASHBOARD_PORT:-8265}"
 RAY_PORT="${RAY_PORT:-6380}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Detect Single-Node Mode Early
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Single-node mode is enabled when:
+#   1. WORKER_HOST is not set (no remote workers)
+#   2. TENSOR_PARALLEL <= number of local GPUs
+# In single-node mode, InfiniBand is not required.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Detect local GPU count
+LOCAL_GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l || echo "0")
+if [ "${LOCAL_GPU_COUNT}" -eq 0 ]; then
+  # Fallback: try nvidia-smi query
+  LOCAL_GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo "1")
+fi
+
+# Determine if we're in single-node mode
+# Single-node: no WORKER_HOST and TENSOR_PARALLEL fits on local GPUs
+if [ -z "${WORKER_HOST}" ] && [ "${TENSOR_PARALLEL}" -le "${LOCAL_GPU_COUNT}" ]; then
+  SINGLE_NODE_MODE=true
+else
+  SINGLE_NODE_MODE=false
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Auto-detect Network Configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Uses ibdev2netdev to discover active InfiniBand/RoCE interfaces.
-# The IP address on the IB/RoCE interface can be any valid IP (not limited
-# to link-local addresses). We rely on ibdev2netdev output to identify the
-# correct network interface for RDMA communication.
+# For multi-node: Uses ibdev2netdev to discover active InfiniBand/RoCE interfaces.
+# For single-node: Uses localhost/loopback - InfiniBand not required.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Discover primary RoCE/IB interface using ibdev2netdev
@@ -99,65 +121,96 @@ get_interface_ip() {
   fi
 }
 
-# Auto-detect primary IB/RoCE interface
-PRIMARY_IB_IF=$(discover_ib_interface)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Network Configuration (conditional on single-node vs multi-node)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Auto-detect HEAD_IP from IB interface (or use override)
-if [ -z "${HEAD_IP:-}" ]; then
-  if [ -n "${PRIMARY_IB_IF}" ]; then
-    HEAD_IP=$(get_interface_ip "${PRIMARY_IB_IF}")
-  fi
-  # Final fallback if auto-detection fails
+if [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  # Single-node mode: InfiniBand not required
+  # Use loopback or first available ethernet interface
+  PRIMARY_IB_IF=""
+
+  # Use provided HEAD_IP or default to 127.0.0.1
   if [ -z "${HEAD_IP:-}" ]; then
-    echo "ERROR: Could not auto-detect HEAD_IP from InfiniBand/RoCE interface."
-    echo ""
-    echo "Please ensure:"
-    echo "  1. The InfiniBand/RoCE cable is connected between nodes"
-    echo "  2. Run 'ibdev2netdev' to verify IB/RoCE interfaces are Up"
-    echo "  3. Check that an IP is assigned to the IB/RoCE interface"
-    echo ""
-    echo "Then either:"
-    echo "  - Fix the interface and re-run this script, OR"
-    echo "  - Set HEAD_IP manually: export HEAD_IP=<your_ib_ip>"
-    exit 1
+    # Try to get a non-loopback IP for Ray (preferred for dashboard access)
+    HEAD_IP=$(ip -o addr show | grep "inet " | grep -v "127.0.0.1" | grep -v "172.17" | awk '{print $4}' | cut -d'/' -f1 | head -1)
+    if [ -z "${HEAD_IP}" ]; then
+      HEAD_IP="127.0.0.1"
+    fi
   fi
-fi
 
-# Auto-detect network interfaces from active IB/RoCE devices
-if [ -z "${GLOO_IF:-}" ] || [ -z "${TP_IF:-}" ] || [ -z "${NCCL_IF:-}" ] || [ -z "${UCX_DEV:-}" ]; then
-  if [ -n "${PRIMARY_IB_IF}" ]; then
-    # Use primary IB interface for all NCCL/GLOO/TP/UCX communication
-    GLOO_IF="${GLOO_IF:-${PRIMARY_IB_IF}}"
-    TP_IF="${TP_IF:-${PRIMARY_IB_IF}}"
-    NCCL_IF="${NCCL_IF:-${PRIMARY_IB_IF}}"
-    UCX_DEV="${UCX_DEV:-${PRIMARY_IB_IF}}"
-  else
-    # Error if no IB interface detected and not manually specified
-    echo "ERROR: No active InfiniBand/RoCE interface detected."
-    echo "Run 'ibdev2netdev' to check interface status."
-    exit 1
-  fi
-fi
+  # For single-node, use loopback for all NCCL/GLOO interfaces
+  # NCCL will use NVLink/PCIe for GPU-to-GPU communication
+  GLOO_IF="${GLOO_IF:-lo}"
+  TP_IF="${TP_IF:-lo}"
+  NCCL_IF="${NCCL_IF:-lo}"
+  UCX_DEV="${UCX_DEV:-lo}"
+  NCCL_IB_HCA=""
+  OMPI_MCA_IF="lo"
 
-# Auto-detect InfiniBand HCAs using ibdev2netdev (or use override)
-if [ -z "${NCCL_IB_HCA:-}" ]; then
-  IB_DEVICES=$(discover_all_ib_hcas)
-  if [ -n "${IB_DEVICES}" ]; then
-    NCCL_IB_HCA="${IB_DEVICES}"
-  else
-    # Fallback: use all IB devices from sysfs
-    IB_DEVICES=$(ls -1 /sys/class/infiniband/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')
-    NCCL_IB_HCA="${IB_DEVICES:-}"
-    if [ -z "${NCCL_IB_HCA}" ]; then
-      echo "ERROR: No InfiniBand HCAs detected."
-      echo "Run 'ibdev2netdev' or check /sys/class/infiniband/"
+else
+  # Multi-node mode: InfiniBand required for performance
+
+  # Auto-detect primary IB/RoCE interface
+  PRIMARY_IB_IF=$(discover_ib_interface)
+
+  # Auto-detect HEAD_IP from IB interface (or use override)
+  if [ -z "${HEAD_IP:-}" ]; then
+    if [ -n "${PRIMARY_IB_IF}" ]; then
+      HEAD_IP=$(get_interface_ip "${PRIMARY_IB_IF}")
+    fi
+    # Final fallback if auto-detection fails
+    if [ -z "${HEAD_IP:-}" ]; then
+      echo "ERROR: Could not auto-detect HEAD_IP from InfiniBand/RoCE interface."
+      echo ""
+      echo "Please ensure:"
+      echo "  1. The InfiniBand/RoCE cable is connected between nodes"
+      echo "  2. Run 'ibdev2netdev' to verify IB/RoCE interfaces are Up"
+      echo "  3. Check that an IP is assigned to the IB/RoCE interface"
+      echo ""
+      echo "Then either:"
+      echo "  - Fix the interface and re-run this script, OR"
+      echo "  - Set HEAD_IP manually: export HEAD_IP=<your_ib_ip>"
       exit 1
     fi
   fi
-fi
 
-# Set OMPI_MCA for MPI-based communication (needed for some frameworks)
-OMPI_MCA_IF="${NCCL_IF}"
+  # Auto-detect network interfaces from active IB/RoCE devices
+  if [ -z "${GLOO_IF:-}" ] || [ -z "${TP_IF:-}" ] || [ -z "${NCCL_IF:-}" ] || [ -z "${UCX_DEV:-}" ]; then
+    if [ -n "${PRIMARY_IB_IF}" ]; then
+      # Use primary IB interface for all NCCL/GLOO/TP/UCX communication
+      GLOO_IF="${GLOO_IF:-${PRIMARY_IB_IF}}"
+      TP_IF="${TP_IF:-${PRIMARY_IB_IF}}"
+      NCCL_IF="${NCCL_IF:-${PRIMARY_IB_IF}}"
+      UCX_DEV="${UCX_DEV:-${PRIMARY_IB_IF}}"
+    else
+      # Error if no IB interface detected and not manually specified
+      echo "ERROR: No active InfiniBand/RoCE interface detected."
+      echo "Run 'ibdev2netdev' to check interface status."
+      exit 1
+    fi
+  fi
+
+  # Auto-detect InfiniBand HCAs using ibdev2netdev (or use override)
+  if [ -z "${NCCL_IB_HCA:-}" ]; then
+    IB_DEVICES=$(discover_all_ib_hcas)
+    if [ -n "${IB_DEVICES}" ]; then
+      NCCL_IB_HCA="${IB_DEVICES}"
+    else
+      # Fallback: use all IB devices from sysfs
+      IB_DEVICES=$(ls -1 /sys/class/infiniband/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+      NCCL_IB_HCA="${IB_DEVICES:-}"
+      if [ -z "${NCCL_IB_HCA}" ]; then
+        echo "ERROR: No InfiniBand HCAs detected."
+        echo "Run 'ibdev2netdev' or check /sys/class/infiniband/"
+        exit 1
+      fi
+    fi
+  fi
+
+  # Set OMPI_MCA for MPI-based communication (needed for some frameworks)
+  OMPI_MCA_IF="${NCCL_IF}"
+fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -191,25 +244,36 @@ echo "Checking worker configuration..."
 if [ -z "${WORKER_HOST}" ] && [ -n "${WORKER_IB_IP}" ]; then
   echo "  ⚠️  WORKER_HOST not set, using WORKER_IB_IP (${WORKER_IB_IP}) for SSH"
   WORKER_HOST="${WORKER_IB_IP}"
+  # Re-evaluate single-node mode since WORKER_HOST changed
+  SINGLE_NODE_MODE=false
 fi
 
-if [ -z "${WORKER_HOST}" ]; then
-  echo "  ℹ️  WORKER_HOST is not set - running in SINGLE-NODE mode"
+if [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  echo "  ℹ️  Running in SINGLE-NODE mode (no InfiniBand required)"
   echo ""
-  echo "  Single-node mode uses only this machine's GPU(s)."
-  echo "  Ensure TENSOR_PARALLEL=${TENSOR_PARALLEL} matches available GPUs."
+  echo "  Local GPUs: ${LOCAL_GPU_COUNT}"
+  echo "  Tensor Parallel: ${TENSOR_PARALLEL}"
   echo ""
   echo "  For multi-node distributed inference, set:"
   echo "    export WORKER_HOST=\"192.168.x.x\"    # Ethernet IP for SSH"
   echo "    export WORKER_IB_IP=\"169.254.x.x\"   # InfiniBand IP for NCCL"
   echo ""
-  SINGLE_NODE_MODE=true
+elif [ -z "${WORKER_HOST}" ]; then
+  # TENSOR_PARALLEL > LOCAL_GPU_COUNT but no WORKER_HOST
+  echo "  ⚠️  TENSOR_PARALLEL=${TENSOR_PARALLEL} exceeds local GPUs (${LOCAL_GPU_COUNT})"
+  echo ""
+  echo "  Either:"
+  echo "    1. Set TENSOR_PARALLEL=${LOCAL_GPU_COUNT} for single-node, OR"
+  echo "    2. Configure a worker node:"
+  echo "       export WORKER_HOST=\"192.168.x.x\"    # Ethernet IP for SSH"
+  echo "       export WORKER_IB_IP=\"169.254.x.x\"   # InfiniBand IP for NCCL"
+  echo ""
+  PREFLIGHT_FAILED=true
 else
   echo "  ✅ WORKER_HOST=${WORKER_HOST} (SSH)"
   if [ -n "${WORKER_IB_IP}" ]; then
     echo "  ✅ WORKER_IB_IP=${WORKER_IB_IP} (NCCL)"
   fi
-  SINGLE_NODE_MODE=false
 fi
 
 # Check 2: SSH connectivity to worker
@@ -255,10 +319,14 @@ else
   PREFLIGHT_FAILED=true
 fi
 
-# Check 5: InfiniBand detection (already done above, but summarize)
+# Check 5: InfiniBand detection (skip in single-node mode)
 echo ""
 echo "Checking InfiniBand..."
-if [ -n "${PRIMARY_IB_IF}" ]; then
+if [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  echo "  ℹ️  InfiniBand check skipped (single-node mode)"
+  echo "  ✅ Using local communication (NVLink/PCIe for GPU-to-GPU)"
+  echo "  ✅ Head IP: ${HEAD_IP}"
+elif [ -n "${PRIMARY_IB_IF}" ]; then
   echo "  ✅ InfiniBand interface detected: ${PRIMARY_IB_IF}"
   echo "  ✅ Head IP (auto-detected): ${HEAD_IP}"
 else
@@ -386,14 +454,21 @@ else
   log "     export WORKER_IB_IP=<ib_ip>       # For NCCL"
   log ""
 fi
-log "Network Configuration (auto-detected from ibdev2netdev):"
-log "  Primary IB IF:   ${PRIMARY_IB_IF:-<not detected>}"
-log "  GLOO Interface:  ${GLOO_IF}"
-log "  TP Interface:    ${TP_IF}"
-log "  NCCL Interface:  ${NCCL_IF}"
-log "  UCX Device:      ${UCX_DEV}"
-log "  OMPI MCA IF:     ${OMPI_MCA_IF}"
-log "  NCCL IB HCAs:    ${NCCL_IB_HCA}"
+if [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  log "Network Configuration (single-node mode - InfiniBand not required):"
+  log "  Mode:            Single-node (local GPUs only)"
+  log "  Local GPUs:      ${LOCAL_GPU_COUNT}"
+  log "  Communication:   NVLink/PCIe (no IB needed)"
+else
+  log "Network Configuration (auto-detected from ibdev2netdev):"
+  log "  Primary IB IF:   ${PRIMARY_IB_IF:-<not detected>}"
+  log "  GLOO Interface:  ${GLOO_IF}"
+  log "  TP Interface:    ${TP_IF}"
+  log "  NCCL Interface:  ${NCCL_IF}"
+  log "  UCX Device:      ${UCX_DEV}"
+  log "  OMPI MCA IF:     ${OMPI_MCA_IF}"
+  log "  NCCL IB HCAs:    ${NCCL_IB_HCA}"
+fi
 log ""
 if [ -n "${HF_TOKEN}" ]; then
   log "  HF Auth:        ✅ Token provided"
@@ -428,20 +503,10 @@ fi
 
 log "Step 3/${TOTAL_STEPS}: Starting head container"
 
-# Build environment variable args for IB/NCCL configuration
-# These are passed into the container to ensure NCCL uses the IB/RoCE link
+# Build environment variable args for NCCL configuration
+# These are passed into the container to configure GPU communication
 ENV_ARGS=(
   -e VLLM_HOST_IP="${HEAD_IP}"
-  # IB/RoCE interface settings for NCCL communication
-  -e GLOO_SOCKET_IFNAME="${GLOO_IF}"
-  -e TP_SOCKET_IFNAME="${TP_IF}"
-  -e NCCL_SOCKET_IFNAME="${NCCL_IF}"
-  -e UCX_NET_DEVICES="${UCX_DEV}"
-  -e OMPI_MCA_btl_tcp_if_include="${OMPI_MCA_IF}"
-  # NCCL InfiniBand settings
-  -e NCCL_IB_DISABLE=0
-  -e NCCL_IB_HCA="${NCCL_IB_HCA}"
-  -e NCCL_NET_GDR_LEVEL=5
   # Debug settings (can be disabled for production by setting NCCL_DEBUG=WARN)
   -e NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
   -e NCCL_DEBUG_SUBSYS="${NCCL_DEBUG_SUBSYS:-INIT,NET}"
@@ -457,24 +522,55 @@ ENV_ARGS=(
   -e HF_HOME=/root/.cache/huggingface
 )
 
+if [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  # Single-node mode: disable IB, use NVLink/PCIe
+  ENV_ARGS+=(
+    -e NCCL_IB_DISABLE=1
+    -e NCCL_SOCKET_IFNAME="${NCCL_IF}"
+  )
+else
+  # Multi-node mode: enable IB/RoCE for high-speed communication
+  ENV_ARGS+=(
+    # IB/RoCE interface settings for NCCL communication
+    -e GLOO_SOCKET_IFNAME="${GLOO_IF}"
+    -e TP_SOCKET_IFNAME="${TP_IF}"
+    -e NCCL_SOCKET_IFNAME="${NCCL_IF}"
+    -e UCX_NET_DEVICES="${UCX_DEV}"
+    -e OMPI_MCA_btl_tcp_if_include="${OMPI_MCA_IF}"
+    # NCCL InfiniBand settings
+    -e NCCL_IB_DISABLE=0
+    -e NCCL_IB_HCA="${NCCL_IB_HCA}"
+    -e NCCL_NET_GDR_LEVEL=5
+  )
+fi
+
 # Add HuggingFace token if provided
 if [ -n "${HF_TOKEN}" ]; then
   ENV_ARGS+=(-e HF_TOKEN="${HF_TOKEN}")
 fi
 
-# Run container as root (required for NVIDIA/vLLM)
+# Build Docker run command
 # HF cache is mounted to /root/.cache/huggingface
+DOCKER_ARGS=(
+  --restart unless-stopped
+  --name "${NAME}"
+  --gpus all
+  --network host
+  --shm-size="${SHM_SIZE}"
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --cap-add=SYS_NICE
+  -v "${HF_CACHE}:/root/.cache/huggingface"
+)
+
+# Add InfiniBand device only in multi-node mode (and only if device exists)
+if [ "${SINGLE_NODE_MODE}" != "true" ] && [ -d "/dev/infiniband" ]; then
+  DOCKER_ARGS+=(--device=/dev/infiniband)
+fi
+
+# Run container as root (required for NVIDIA/vLLM)
 docker run -d \
-  --restart unless-stopped \
-  --name "${NAME}" \
-  --gpus all \
-  --network host \
-  --shm-size="${SHM_SIZE}" \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --cap-add=SYS_NICE \
-  --device=/dev/infiniband \
-  -v "${HF_CACHE}:/root/.cache/huggingface" \
+  "${DOCKER_ARGS[@]}" \
   "${ENV_ARGS[@]}" \
   "${IMAGE}" sleep infinity
 
@@ -487,14 +583,18 @@ log "  Container started successfully"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 log "Step 4/${TOTAL_STEPS}: Verifying RDMA/InfiniBand libraries for NCCL"
-log "  These libraries are required for NCCL to use InfiniBand/RoCE instead of Ethernet"
-# NVIDIA vLLM container already includes RDMA libraries (libibverbs, librdmacm, ibverbs-providers)
-# We just verify they're present rather than installing
-if docker exec "${NAME}" bash -lc "ldconfig -p 2>/dev/null | grep -q libibverbs"; then
-  log "  ✅ RDMA libraries available (libibverbs, librdmacm)"
+if [ "${SINGLE_NODE_MODE}" = "true" ]; then
+  log "  ℹ️  RDMA check skipped (single-node mode uses NVLink/PCIe)"
 else
-  log "  ⚠️  Warning: RDMA libraries may not be properly installed"
-  log "     NCCL may fall back to Socket transport (slower)"
+  log "  These libraries are required for NCCL to use InfiniBand/RoCE instead of Ethernet"
+  # NVIDIA vLLM container already includes RDMA libraries (libibverbs, librdmacm, ibverbs-providers)
+  # We just verify they're present rather than installing
+  if docker exec "${NAME}" bash -lc "ldconfig -p 2>/dev/null | grep -q libibverbs"; then
+    log "  ✅ RDMA libraries available (libibverbs, librdmacm)"
+  else
+    log "  ⚠️  Warning: RDMA libraries may not be properly installed"
+    log "     NCCL may fall back to Socket transport (slower)"
+  fi
 fi
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

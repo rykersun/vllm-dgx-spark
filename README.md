@@ -7,8 +7,9 @@ Deploy [vLLM](https://github.com/vllm-project/vllm) on NVIDIA DGX Spark systems 
 ## Features
 
 - **Single-node and multi-node support** - Run on one DGX Spark or scale to two
+- **Zero-config single-node** - No InfiniBand setup required for single-node deployments
 - **Single-command deployment** - Start entire cluster from head node via SSH
-- **Auto-detection** of InfiniBand IPs, network interfaces, and HCA devices
+- **Auto-detection** of InfiniBand IPs, network interfaces, and HCA devices (multi-node)
 - **Generic scripts** that work on any DGX Spark configuration
 - **13 model presets** including Llama, Qwen, Mixtral, Gemma
 - **InfiniBand RDMA** for high-speed inter-node communication (200Gb/s)
@@ -74,7 +75,8 @@ Deploy [vLLM](https://github.com/vllm-project/vllm) on NVIDIA DGX Spark systems 
 ## Prerequisites
 
 Complete these steps on your server(s) before running `start_cluster.sh`.
-For single-node setups, only the head node needs to be configured.
+
+**Single-node setups only require steps 1, 2, and 5 (HuggingFace token for gated models).** InfiniBand and SSH configuration are automatically skipped when running in single-node mode.
 
 ### 1. NVIDIA GPU Drivers
 
@@ -174,7 +176,11 @@ export MODEL="meta-llama/Llama-3.1-70B-Instruct"  # or any model up to ~80GB
 ./start_cluster.sh
 ```
 
-That's it! No SSH setup or worker configuration needed.
+That's it! **No InfiniBand, SSH setup, or worker configuration needed.** The script automatically detects single-node mode when `TENSOR_PARALLEL` is less than or equal to the number of local GPUs and no `WORKER_HOST` is configured. In single-node mode:
+
+- InfiniBand detection and configuration is skipped
+- NCCL uses NVLink/PCIe for GPU-to-GPU communication
+- The setup is simpler and faster
 
 #### Option B: Dual-Node Cluster (For Larger Models)
 
@@ -275,6 +281,8 @@ Key settings in `config.env` or `config.local.env`:
 # ┌─────────────────────────────────────────────────────────────────┐
 # │ Multi-Node Settings (Optional - skip for single-node)          │
 # └─────────────────────────────────────────────────────────────────┘
+# If these are not set and TENSOR_PARALLEL <= local GPU count,
+# the script runs in single-node mode (no InfiniBand required)
 WORKER_HOST="<worker-ethernet-ip>" # Worker Ethernet IP for SSH (optional)
 WORKER_IB_IP="<worker-ib-ip>"      # Worker InfiniBand IP for NCCL (optional)
 WORKER_USER="<username>"           # SSH username for workers
@@ -284,6 +292,7 @@ WORKER_USER="<username>"           # SSH username for workers
 # └─────────────────────────────────────────────────────────────────┘
 MODEL="openai/gpt-oss-120b"        # Model to serve
 TENSOR_PARALLEL="2"                # GPUs: 1 for single-node, 2 for dual-node
+                                   # Single-node mode: when TP <= local GPUs and no WORKER_HOST
 GPU_MEMORY_UTIL="0.90"             # GPU memory utilization for KV cache
 
 # ┌─────────────────────────────────────────────────────────────────┐
@@ -300,6 +309,26 @@ TRUST_REMOTE_CODE="false"          # For custom model code
 HF_TOKEN="hf_xxx"                  # For gated models (Llama, etc.)
 VLLM_IMAGE="nvcr.io/nvidia/vllm:25.11-py3"  # Docker image
 ```
+
+### Single-Node vs Multi-Node Mode Detection
+
+The script automatically determines which mode to use:
+
+| Condition | Mode | InfiniBand |
+|-----------|------|------------|
+| `WORKER_HOST` not set AND `TENSOR_PARALLEL` ≤ local GPUs | Single-node | Not required |
+| `WORKER_HOST` set OR `TENSOR_PARALLEL` > local GPUs | Multi-node | Required |
+
+In **single-node mode**:
+- InfiniBand detection and configuration is skipped
+- NCCL uses NVLink/PCIe for local GPU communication
+- No SSH or worker setup needed
+- The `/dev/infiniband` device is not mounted in the container
+
+In **multi-node mode**:
+- InfiniBand interfaces are auto-detected via `ibdev2netdev`
+- HEAD_IP is auto-detected from the InfiniBand interface
+- NCCL is configured for RDMA communication
 
 ### Finding Worker InfiniBand IP
 
